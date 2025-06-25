@@ -1,0 +1,468 @@
+# Monitoring and metrics configuration for Kindle Content Server
+
+# Prometheus ServiceMonitor for Kubernetes
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kindle-server-metrics
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    monitoring: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: kindle-server
+      component: backend
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    - sourceLabels: [__meta_kubernetes_pod_container_name]
+      targetLabel: container
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: 'kindle_server_(.*)'
+      targetLabel: __name__
+      replacement: '${1}'
+---
+# PrometheusRule for custom alerting rules
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kindle-server-alerts
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    monitoring: prometheus
+spec:
+  groups:
+  - name: kindle-server.rules
+    interval: 30s
+    rules:
+    # High Error Rate Alert
+    - alert: KindleServerHighErrorRate
+      expr: |
+        (
+          sum(rate(flask_http_request_exceptions_total[5m])) by (instance)
+          /
+          sum(rate(flask_http_request_total[5m])) by (instance)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "High error rate detected"
+        description: "Kindle Server instance {{ $labels.instance }} has error rate of {{ $value | humanizePercentage }}"
+    
+    # High Response Time Alert
+    - alert: KindleServerHighLatency
+      expr: |
+        histogram_quantile(0.95, 
+          sum(rate(flask_http_request_duration_seconds_bucket[5m])) by (le, instance)
+        ) > 2.0
+      for: 5m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "High response time detected"
+        description: "Kindle Server instance {{ $labels.instance }} has 95th percentile latency of {{ $value }}s"
+    
+    # Low Available Replicas Alert
+    - alert: KindleServerLowReplicas
+      expr: |
+        kube_deployment_status_replicas_available{deployment="kindle-server"} < 1
+      for: 1m
+      labels:
+        severity: critical
+        service: kindle-server
+      annotations:
+        summary: "Low number of available replicas"
+        description: "Kindle Server has only {{ $value }} available replicas"
+    
+    # High Memory Usage Alert
+    - alert: KindleServerHighMemoryUsage
+      expr: |
+        (
+          process_resident_memory_bytes{job="kindle-server"}
+          /
+          (1024 * 1024 * 1024)
+        ) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "High memory usage detected"
+        description: "Kindle Server instance {{ $labels.instance }} is using {{ $value | humanize }}GB of memory"
+    
+    # High CPU Usage Alert
+    - alert: KindleServerHighCPUUsage
+      expr: |
+        rate(process_cpu_seconds_total{job="kindle-server"}[5m]) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "High CPU usage detected"
+        description: "Kindle Server instance {{ $labels.instance }} has CPU usage of {{ $value | humanizePercentage }}"
+    
+    # Database Connection Pool Alert
+    - alert: KindleServerDatabaseConnectionHigh
+      expr: |
+        sqlalchemy_pool_size{job="kindle-server"} - sqlalchemy_pool_checked_in{job="kindle-server"} < 2
+      for: 5m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "Database connection pool running low"
+        description: "Kindle Server has less than 2 available database connections"
+    
+    # File Upload Errors Alert
+    - alert: KindleServerUploadErrors
+      expr: |
+        increase(kindle_server_uploads_failed_total[10m]) > 5
+      for: 2m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "High number of file upload failures"
+        description: "{{ $value }} file uploads have failed in the last 10 minutes"
+    
+    # News Sync Failures Alert
+    - alert: KindleServerNewsSyncFailures
+      expr: |
+        increase(kindle_server_news_sync_failures_total[30m]) > 3
+      for: 5m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "News sync failures detected"
+        description: "{{ $value }} news sync operations have failed in the last 30 minutes"
+    
+    # Kubernetes Pod Restart Alert
+    - alert: KindleServerPodRestarting
+      expr: |
+        increase(kube_pod_container_status_restarts_total{namespace="kindle-server",container="app"}[10m]) > 0
+      for: 1m
+      labels:
+        severity: warning
+        service: kindle-server
+      annotations:
+        summary: "Pod is restarting frequently"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in the last 10 minutes"
+---
+# Grafana Dashboard ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kindle-server-dashboard
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    grafana_dashboard: "true"
+data:
+  dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Kindle Content Server Dashboard",
+        "tags": ["kindle-server", "flask", "python"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "title": "Request Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(flask_http_request_total[5m])) by (method, status)",
+                "legendFormat": "{{method}} - {{status}}"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Requests/sec"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "title": "Response Time",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(flask_http_request_duration_seconds_bucket[5m])) by (le))",
+                "legendFormat": "95th percentile"
+              },
+              {
+                "expr": "histogram_quantile(0.50, sum(rate(flask_http_request_duration_seconds_bucket[5m])) by (le))",
+                "legendFormat": "50th percentile"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Seconds"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 12,
+              "y": 0
+            }
+          },
+          {
+            "title": "Error Rate",
+            "type": "singlestat",
+            "targets": [
+              {
+                "expr": "sum(rate(flask_http_request_exceptions_total[5m])) / sum(rate(flask_http_request_total[5m])) * 100",
+                "legendFormat": "Error Rate %"
+              }
+            ],
+            "format": "percent",
+            "colorBackground": true,
+            "thresholds": "5,10",
+            "gridPos": {
+              "h": 4,
+              "w": 6,
+              "x": 0,
+              "y": 8
+            }
+          },
+          {
+            "title": "Active Users",
+            "type": "singlestat",
+            "targets": [
+              {
+                "expr": "kindle_server_active_users",
+                "legendFormat": "Active Users"
+              }
+            ],
+            "gridPos": {
+              "h": 4,
+              "w": 6,
+              "x": 6,
+              "y": 8
+            }
+          },
+          {
+            "title": "Database Connections",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sqlalchemy_pool_size",
+                "legendFormat": "Pool Size"
+              },
+              {
+                "expr": "sqlalchemy_pool_checked_in",
+                "legendFormat": "Checked In"
+              },
+              {
+                "expr": "sqlalchemy_pool_checked_out",
+                "legendFormat": "Checked Out"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 12,
+              "y": 8
+            }
+          },
+          {
+            "title": "Memory Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "process_resident_memory_bytes / 1024 / 1024",
+                "legendFormat": "RSS Memory (MB)"
+              },
+              {
+                "expr": "process_virtual_memory_bytes / 1024 / 1024",
+                "legendFormat": "Virtual Memory (MB)"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 0,
+              "y": 12
+            }
+          },
+          {
+            "title": "CPU Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(process_cpu_seconds_total[5m]) * 100",
+                "legendFormat": "CPU Usage %"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Percent",
+                "max": 100,
+                "min": 0
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 12,
+              "y": 12
+            }
+          },
+          {
+            "title": "Book Uploads",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(kindle_server_uploads_total[1h])",
+                "legendFormat": "Successful Uploads"
+              },
+              {
+                "expr": "increase(kindle_server_uploads_failed_total[1h])",
+                "legendFormat": "Failed Uploads"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 0,
+              "y": 20
+            }
+          },
+          {
+            "title": "News Articles Fetched",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(kindle_server_news_articles_fetched_total[1h])",
+                "legendFormat": "Articles Fetched"
+              }
+            ],
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 12,
+              "y": 20
+            }
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }
+---
+# Custom Metrics Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kindle-server-metrics-config
+  namespace: kindle-server
+data:
+  metrics.yaml: |
+    # Custom metrics configuration for application
+    metrics:
+      # Business metrics
+      business:
+        - name: books_uploaded_total
+          type: counter
+          description: "Total number of books uploaded"
+          labels: [user_id, file_type, status]
+        
+        - name: books_downloaded_total
+          type: counter
+          description: "Total number of books downloaded"
+          labels: [user_id, device_id, file_type]
+        
+        - name: active_users
+          type: gauge
+          description: "Number of currently active users"
+        
+        - name: sync_operations_total
+          type: counter
+          description: "Total number of sync operations"
+          labels: [device_type, status, sync_type]
+        
+        - name: news_articles_fetched_total
+          type: counter
+          description: "Total number of news articles fetched"
+          labels: [source, status]
+      
+      # Technical metrics
+      technical:
+        - name: database_query_duration_seconds
+          type: histogram
+          description: "Database query execution time"
+          labels: [query_type, table]
+          buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+        
+        - name: cache_operations_total
+          type: counter
+          description: "Cache operations (hit/miss)"
+          labels: [operation, status]
+        
+        - name: background_tasks_total
+          type: counter
+          description: "Background task executions"
+          labels: [task_type, status]
+        
+        - name: file_processing_duration_seconds
+          type: histogram
+          description: "File processing time"
+          labels: [file_type, operation]
+          buckets: [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0]
+      
+      # Infrastructure metrics
+      infrastructure:
+        - name: storage_usage_bytes
+          type: gauge
+          description: "Storage usage in bytes"
+          labels: [bucket, type]
+        
+        - name: api_rate_limit_exceeded_total
+          type: counter
+          description: "API rate limit exceeded events"
+          labels: [endpoint, user_id]
+        
+        - name: security_events_total
+          type: counter
+          description: "Security-related events"
+          labels: [event_type, severity, source_ip]
+    
+    # Alerting thresholds
+    thresholds:
+      error_rate: 0.05        # 5%
+      response_time_p95: 2.0  # 2 seconds
+      memory_usage: 0.8       # 80%
+      cpu_usage: 0.8          # 80%
+      disk_usage: 0.85        # 85%
+      
+    # Retention policies
+    retention:
+      high_frequency_metrics: "7d"   # 7 days for detailed metrics
+      daily_aggregates: "90d"        # 90 days for daily summaries
+      monthly_aggregates: "1y"       # 1 year for monthly summaries

@@ -1,0 +1,49 @@
+# Kubernetes namespace for Kindle Content Server
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kindle-server
+  labels:
+    app: kindle-server
+    environment: production
+    managed-by: terraform
+  annotations:
+    description: "Namespace for Kindle Content Server application"
+---
+# Resource quota for cost control
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kindle-server-quota
+  namespace: kindle-server
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    pods: "10"
+    persistentvolumeclaims: "5"
+    services: "5"
+    secrets: "10"
+    configmaps: "10"
+---
+# Limit range for pod defaults
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: kindle-server-limits
+  namespace: kindle-server
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+  - max:
+      cpu: "2"
+      memory: "2Gi"
+    type: Container

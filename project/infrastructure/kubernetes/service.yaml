@@ -1,0 +1,66 @@
+# Kubernetes Services for Kindle Content Server
+apiVersion: v1
+kind: Service
+metadata:
+  name: kindle-server-service
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: backend
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "kindle-server-backendconfig"}'
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: kindle-server
+    component: backend
+---
+# Headless service for StatefulSet (if needed)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kindle-server-headless
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: backend
+spec:
+  clusterIP: None
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: kindle-server
+    component: backend
+---
+# Internal service for monitoring
+apiVersion: v1
+kind: Service
+metadata:
+  name: kindle-server-metrics
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: backend
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: metrics
+  selector:
+    app: kindle-server
+    component: backend

@@ -1,0 +1,482 @@
+# Security Policies and Compliance Configuration for Kindle Content Server
+
+# Identity and Access Management (IAM) Security Policies
+apiVersion: iam.googleapis.com/v1
+kind: SecurityPolicy
+metadata:
+  name: kindle-server-iam-security-policy
+  namespace: security
+spec:
+  displayName: "Kindle Server IAM Security Policy"
+  description: "Comprehensive IAM security policy for Kindle Content Server"
+  
+  # Multi-factor authentication requirements
+  mfaRequirements:
+    - principals:
+        - "group:kindle-admins@example.com"
+        - "group:kindle-developers@example.com"
+      mfaRequired: true
+      exemptions: []
+    
+    # Service accounts don't require MFA but need strong key management
+    - principals:
+        - "serviceAccount:*@${PROJECT_ID}.iam.gserviceaccount.com"
+      mfaRequired: false
+      keyRotationRequired: true
+      keyRotationPeriod: "90d"
+  
+  # Session management
+  sessionManagement:
+    maxSessionDuration: "8h"
+    idleTimeout: "1h"
+    ipBindingRequired: true
+    
+  # Access logging requirements
+  accessLogging:
+    enabled: true
+    includeDataAccess: true
+    retentionPeriod: "1y"
+    
+  # Conditional access policies
+  conditionalAccess:
+    - name: "Geographic Restrictions"
+      condition: |
+        request.auth.access_levels.contains("accessPolicies/kindle-server-access-policy/accessLevels/corporate-network") ||
+        request.auth.access_levels.contains("accessPolicies/kindle-server-access-policy/accessLevels/trusted-countries")
+      action: "ALLOW"
+      
+    - name: "Time-based Access"
+      condition: |
+        request.time.getHours() >= 6 && request.time.getHours() <= 22
+      action: "ALLOW"
+      exemptPrincipals:
+        - "group:kindle-oncall@example.com"
+        - "serviceAccount:*@${PROJECT_ID}.iam.gserviceaccount.com"
+---
+# Access Context Manager Policies
+apiVersion: accesscontextmanager.googleapis.com/v1
+kind: AccessPolicy
+metadata:
+  name: kindle-server-access-policy
+  namespace: security
+spec:
+  parent: "organizations/YOUR_ORG_ID"
+  title: "Kindle Content Server Access Policy"
+  
+  accessLevels:
+    - name: "corporate-network"
+      title: "Corporate Network Access"
+      basic:
+        conditions:
+          - ipSubnetworks:
+              - "203.0.113.0/24"    # Corporate IP range
+              - "198.51.100.0/24"   # VPN IP range
+          - requiredAccessLevels: []
+          
+    - name: "trusted-countries"
+      title: "Trusted Geographic Locations"
+      basic:
+        conditions:
+          - regions:
+              - "US"
+              - "CA"
+              - "GB"
+              - "DE"
+              - "FR"
+              - "AU"
+          - requiredAccessLevels: []
+          
+    - name: "development-access"
+      title: "Development Environment Access"
+      basic:
+        conditions:
+          - ipSubnetworks:
+              - "203.0.113.0/24"
+          - requiredAccessLevels: []
+          - devicePolicy:
+              requireScreenlock: true
+              requireAdminApproval: false
+              requireCorpOwned: true
+              
+    - name: "production-access"
+      title: "Production Environment Access"
+      basic:
+        conditions:
+          - ipSubnetworks:
+              - "203.0.113.0/24"
+          - requiredAccessLevels:
+              - "accessPolicies/kindle-server-access-policy/accessLevels/corporate-network"
+          - devicePolicy:
+              requireScreenlock: true
+              requireAdminApproval: true
+              requireCorpOwned: true
+              osConstraints:
+                - osType: "DESKTOP_WINDOWS"
+                  minimumVersion: "10.0.0"
+                - osType: "DESKTOP_MAC"
+                  minimumVersion: "10.15.0"
+                - osType: "DESKTOP_LINUX"
+  
+  servicePerimeters:
+    - name: "kindle-server-perimeter"
+      title: "Kindle Server VPC Service Perimeter"
+      description: "Protects Kindle Server resources from data exfiltration"
+      perimeterType: "PERIMETER_TYPE_REGULAR"
+      status:
+        resources:
+          - "projects/${PROJECT_ID}"
+        accessLevels:
+          - "accessPolicies/kindle-server-access-policy/accessLevels/corporate-network"
+          - "accessPolicies/kindle-server-access-policy/accessLevels/trusted-countries"
+        restrictedServices:
+          - "storage.googleapis.com"
+          - "cloudsql.googleapis.com"
+          - "secretmanager.googleapis.com"
+        vpcAccessibleServices:
+          enableRestriction: true
+          allowedServices:
+            - "storage.googleapis.com"
+            - "cloudsql.googleapis.com"
+            - "secretmanager.googleapis.com"
+            - "logging.googleapis.com"
+            - "monitoring.googleapis.com"
+            - "cloudtrace.googleapis.com"
+---
+# Binary Authorization Policy for Container Security
+apiVersion: binaryauthorization.googleapis.com/v1
+kind: Policy
+metadata:
+  name: kindle-server-binary-authorization-policy
+  namespace: security
+spec:
+  description: "Binary Authorization policy for Kindle Content Server"
+  globalPolicyEvaluationMode: "ENABLE"
+  
+  defaultAdmissionRule:
+    evaluationMode: "REQUIRE_ATTESTATION"
+    enforcementMode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+    requireAttestationsBy:
+      - "projects/${PROJECT_ID}/attestors/vulnerability-scanner"
+      - "projects/${PROJECT_ID}/attestors/security-review"
+      - "projects/${PROJECT_ID}/attestors/quality-assurance"
+  
+  clusterAdmissionRules:
+    # Production cluster requires all attestations
+    "${REGION}.kindle-production-cluster":
+      evaluationMode: "REQUIRE_ATTESTATION"
+      enforcementMode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+      requireAttestationsBy:
+        - "projects/${PROJECT_ID}/attestors/vulnerability-scanner"
+        - "projects/${PROJECT_ID}/attestors/security-review"
+        - "projects/${PROJECT_ID}/attestors/quality-assurance"
+        - "projects/${PROJECT_ID}/attestors/compliance-check"
+    
+    # Staging cluster requires basic attestations
+    "${REGION}.kindle-staging-cluster":
+      evaluationMode: "REQUIRE_ATTESTATION"
+      enforcementMode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+      requireAttestationsBy:
+        - "projects/${PROJECT_ID}/attestors/vulnerability-scanner"
+        - "projects/${PROJECT_ID}/attestors/security-review"
+    
+    # Development cluster allows unsigned images but logs them
+    "${REGION}.kindle-development-cluster":
+      evaluationMode: "ALWAYS_ALLOW"
+      enforcementMode: "DRYRUN_AUDIT_LOG_ONLY"
+      requireAttestationsBy: []
+  
+  # Kubernetes service account admission rules
+  kubernetesServiceAccountAdmissionRules:
+    # Restrict privileged service accounts
+    "system:serviceaccount:kube-system:*":
+      evaluationMode: "ALWAYS_DENY"
+      enforcementMode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+    
+    # Allow Kindle Server service accounts with attestation
+    "system:serviceaccount:kindle-server:*":
+      evaluationMode: "REQUIRE_ATTESTATION"
+      enforcementMode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+      requireAttestationsBy:
+        - "projects/${PROJECT_ID}/attestors/vulnerability-scanner"
+---
+# Attestors for Binary Authorization
+apiVersion: binaryauthorization.googleapis.com/v1
+kind: Attestor
+metadata:
+  name: vulnerability-scanner-attestor
+  namespace: security
+spec:
+  name: "projects/${PROJECT_ID}/attestors/vulnerability-scanner"
+  description: "Vulnerability scanner attestor for container images"
+  
+  userOwnedGrafeasNote:
+    noteReference: "projects/${PROJECT_ID}/notes/vulnerability-scanner-note"
+    publicKeys:
+      - keyType: "PGP_ASCII_ARMORED"
+        keyId: "vulnerability-scanner-key"
+        asciiArmoredPgpPublicKey: |
+          -----BEGIN PGP PUBLIC KEY BLOCK-----
+          # Public key content would go here
+          -----END PGP PUBLIC KEY BLOCK-----
+    delegationServiceAccountEmail: "vulnerability-scanner@${PROJECT_ID}.iam.gserviceaccount.com"
+---
+apiVersion: binaryauthorization.googleapis.com/v1
+kind: Attestor
+metadata:
+  name: security-review-attestor
+  namespace: security
+spec:
+  name: "projects/${PROJECT_ID}/attestors/security-review"
+  description: "Security review attestor for manual security approval"
+  
+  userOwnedGrafeasNote:
+    noteReference: "projects/${PROJECT_ID}/notes/security-review-note"
+    publicKeys:
+      - keyType: "PKIX_PEM"
+        keyId: "security-review-key"
+        pkixPublicKey:
+          publicKeyPem: |
+            -----BEGIN PUBLIC KEY-----
+            # Public key content would go here
+            -----END PUBLIC KEY-----
+    delegationServiceAccountEmail: "security-review@${PROJECT_ID}.iam.gserviceaccount.com"
+---
+# Data Loss Prevention (DLP) Policy
+apiVersion: privacy.googleapis.com/v1
+kind: DlpJob
+metadata:
+  name: kindle-server-dlp-job
+  namespace: security
+spec:
+  parent: "projects/${PROJECT_ID}/locations/global"
+  
+  inspectJob:
+    inspectTemplate:
+      inspectConfig:
+        infoTypes:
+          - name: "EMAIL_ADDRESS"
+          - name: "PHONE_NUMBER"
+          - name: "CREDIT_CARD_NUMBER"
+          - name: "SSN"
+          - name: "PASSPORT"
+        includeQuote: true
+        minLikelihood: "LIKELY"
+        limits:
+          maxFindingsPerItem: 100
+          maxFindingsPerRequest: 1000
+        
+        customInfoTypes:
+          - infoType:
+              name: "USER_ID"
+            regex:
+              pattern: "user_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+            likelihood: "LIKELY"
+          
+          - infoType:
+              name: "KINDLE_DEVICE_ID"
+            regex:
+              pattern: "kindle_[A-Z0-9]{16}"
+            likelihood: "VERY_LIKELY"
+    
+    storageConfig:
+      cloudStorageOptions:
+        fileSet:
+          url: "gs://kindle-server-books-*/user-uploads/*"
+        bytesLimitPerFile: 104857600  # 100MB
+        fileTypes:
+          - "TEXT_FILE"
+          - "PDF"
+          - "EPUB"
+    
+    actions:
+      - saveFindings:
+          outputConfig:
+            table:
+              projectId: "${PROJECT_ID}"
+              datasetId: "security_findings"
+              tableId: "dlp_findings"
+      
+      - publishSummaryToCscc: {}
+      
+      - publishToStackdriver: {}
+---
+# Security Health Analytics Custom Module
+apiVersion: securitycenter.googleapis.com/v1
+kind: CustomModule
+metadata:
+  name: kindle-server-security-module
+  namespace: security
+spec:
+  displayName: "Kindle Server Security Checks"
+  description: "Custom security checks for Kindle Content Server"
+  
+  enablementState: "ENABLED"
+  
+  customConfig:
+    predicate:
+      expression: |
+        resource.type == "gce_instance" ||
+        resource.type == "cloud_run_revision" ||
+        resource.type == "gcs_bucket" ||
+        resource.type == "cloudsql_database"
+    
+    customOutput:
+      properties:
+        resourceName: "resource.name"
+        resourceType: "resource.type"
+        severity: "'MEDIUM'"
+        category: "'SECURITY_MISCONFIGURATION'"
+    
+    resourceSelector:
+      resourceTypes:
+        - "compute.googleapis.com/Instance"
+        - "run.googleapis.com/Service"
+        - "storage.googleapis.com/Bucket"
+        - "sqladmin.googleapis.com/Instance"
+    
+    severity: "MEDIUM"
+    
+    description: |
+      Checks for security misconfigurations in Kindle Server resources:
+      - Unencrypted storage buckets
+      - Cloud Run services without proper IAM
+      - Cloud SQL instances with public IPs
+      - Compute instances with external IPs
+---
+# Cloud KMS Encryption Policy
+apiVersion: cloudkms.googleapis.com/v1
+kind: EncryptionPolicy
+metadata:
+  name: kindle-server-encryption-policy
+  namespace: security
+spec:
+  description: "Encryption policy for Kindle Content Server data"
+  
+  # Encryption at rest requirements
+  encryptionAtRest:
+    # Storage buckets must use customer-managed encryption keys
+    storageRequirements:
+      - resourceTypes: ["storage.googleapis.com/Bucket"]
+        condition: |
+          resource.labels["app"] == "kindle-server"
+        encryptionMethod: "CUSTOMER_MANAGED"
+        keyRing: "projects/${PROJECT_ID}/locations/global/keyRings/kindle-server-keyring"
+        cryptoKey: "data-encryption-key"
+    
+    # Cloud SQL instances must use customer-managed encryption
+    databaseRequirements:
+      - resourceTypes: ["sqladmin.googleapis.com/Instance"]
+        condition: |
+          resource.labels["app"] == "kindle-server"
+        encryptionMethod: "CUSTOMER_MANAGED"
+        keyRing: "projects/${PROJECT_ID}/locations/global/keyRings/kindle-server-keyring"
+        cryptoKey: "database-encryption-key"
+    
+    # Secrets must be encrypted with specific keys
+    secretRequirements:
+      - resourceTypes: ["secretmanager.googleapis.com/Secret"]
+        condition: |
+          resource.name.contains("kindle-server")
+        encryptionMethod: "CUSTOMER_MANAGED"
+        keyRing: "projects/${PROJECT_ID}/locations/global/keyRings/kindle-server-keyring"
+        cryptoKey: "secret-encryption-key"
+  
+  # Encryption in transit requirements
+  encryptionInTransit:
+    # All API calls must use TLS 1.2 or higher
+    tlsRequirements:
+      minimumTlsVersion: "TLS_1_2"
+      cipherSuites:
+        - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+    
+    # Database connections must use SSL
+    databaseConnections:
+      requireSsl: true
+      minimumTlsVersion: "TLS_1_2"
+  
+  # Key management requirements
+  keyManagement:
+    rotationSchedule:
+      period: "90d"  # Rotate keys every 90 days
+      nextRotation: "2024-07-01T00:00:00Z"
+    
+    # Key usage restrictions
+    keyUsageRestrictions:
+      allowedOperations: ["encrypt", "decrypt"]
+      preventDestroy: true
+      
+    # Access controls for keys
+    keyAccessControls:
+      - principals:
+          - "serviceAccount:kindle-server-cloud-run@${PROJECT_ID}.iam.gserviceaccount.com"
+        roles: ["roles/cloudkms.cryptoKeyEncrypterDecrypter"]
+        condition: |
+          request.time.getHours() >= 0 && request.time.getHours() <= 23
+      
+      - principals:
+          - "group:kindle-key-admins@example.com"
+        roles: ["roles/cloudkms.admin"]
+        condition: |
+          request.auth.access_levels.contains("accessPolicies/kindle-server-access-policy/accessLevels/corporate-network")
+---
+# Compliance and Audit Configuration
+apiVersion: compliance.googleapis.com/v1
+kind: ComplianceFramework
+metadata:
+  name: kindle-server-compliance
+  namespace: security
+spec:
+  displayName: "Kindle Server Compliance Framework"
+  description: "Compliance requirements for Kindle Content Server"
+  
+  frameworks:
+    - name: "SOC2_TYPE2"
+      controls:
+        - controlId: "CC6.1"
+          description: "Logical and physical access controls"
+          implementation: "IAM policies and VPC security controls"
+          evidence: "IAM audit logs, firewall rules"
+          
+        - controlId: "CC6.7"
+          description: "Data transmission and disposal"
+          implementation: "TLS encryption and secure deletion"
+          evidence: "Encryption policies, deletion logs"
+    
+    - name: "GDPR"
+      controls:
+        - controlId: "ART32"
+          description: "Security of processing"
+          implementation: "Encryption at rest and in transit"
+          evidence: "KMS logs, TLS certificates"
+          
+        - controlId: "ART25"
+          description: "Data protection by design"
+          implementation: "DLP policies and access controls"
+          evidence: "DLP findings, access logs"
+    
+    - name: "ISO27001"
+      controls:
+        - controlId: "A.9.1.1"
+          description: "Access control policy"
+          implementation: "IAM policies and access reviews"
+          evidence: "Policy documents, access reviews"
+          
+        - controlId: "A.10.1.1"
+          description: "Cryptographic controls"
+          implementation: "KMS encryption and key management"
+          evidence: "Encryption configuration, key rotation logs"
+  
+  auditRequirements:
+    frequency: "quarterly"
+    auditor: "external"
+    retentionPeriod: "7y"
+    
+  continuousMonitoring:
+    enabled: true
+    alerting: true
+    dashboards:
+      - "Security Compliance Dashboard"
+      - "Access Control Monitoring"
+      - "Encryption Status Dashboard"

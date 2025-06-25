@@ -1,0 +1,145 @@
+# Google Cloud Ingress for Kindle Content Server
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kindle-server-ingress
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+  annotations:
+    # Use Google Cloud Load Balancer
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "kindle-server-ip"
+    
+    # SSL configuration
+    ingress.gcp.io/pre-shared-cert: "kindle-server-ssl-cert"
+    kubernetes.io/ingress.allow-http: "false"
+    
+    # Backend configuration
+    cloud.google.com/backend-config: '{"default": "kindle-server-backendconfig"}'
+    
+    # IAP (Identity-Aware Proxy) for additional security
+    cloud.google.com/iap-config: '{"kindle-server-service": {"enabled": true, "oauthclientCredentials": {"secretName": "oauth-client-secret"}}}'
+    
+    # Rate limiting
+    cloud.google.com/armor-config: '{"kindle-server-service": "kindle-server-armor-policy"}'
+    
+    # Custom headers
+    ingress.kubernetes.io/custom-request-headers: "X-Forwarded-Proto:https"
+spec:
+  rules:
+  - host: kindle.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kindle-server-service
+            port:
+              number: 80
+  - host: api.kindle.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: kindle-server-service
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - kindle.example.com
+    - api.kindle.example.com
+    secretName: kindle-server-tls
+---
+# Backend configuration for advanced features
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: kindle-server-backendconfig
+  namespace: kindle-server
+spec:
+  # Health check configuration
+  healthCheck:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /health
+    port: 8080
+  
+  # Session affinity
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+    affinityCookieTtlSec: 3600
+  
+  # Timeout configuration
+  timeoutSec: 30
+  
+  # Connection draining
+  connectionDraining:
+    drainingTimeoutSec: 60
+  
+  # Custom request headers
+  customRequestHeaders:
+    headers:
+    - "X-Client-Region:{client_region}"
+    - "X-Client-City:{client_city}"
+  
+  # Security policy
+  securityPolicy:
+    name: "kindle-server-armor-policy"
+  
+  # CDN configuration
+  cdn:
+    enabled: true
+    cachePolicy:
+      includeHost: true
+      includeProtocol: true
+      includeQueryString: false
+    negativeCaching: true
+    negativeCachingPolicy:
+    - code: 404
+      ttl: 300
+    - code: 500
+      ttl: 60
+  
+  # Logging
+  logging:
+    enable: true
+    sampleRate: 1.0
+---
+# Managed Certificate for SSL
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: kindle-server-ssl-cert
+  namespace: kindle-server
+spec:
+  domains:
+    - kindle.example.com
+    - api.kindle.example.com
+---
+# Frontend configuration for additional routing
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: kindle-server-frontend-config
+  namespace: kindle-server
+spec:
+  # Redirect HTTP to HTTPS
+  redirectToHttps:
+    enabled: true
+  
+  # Security headers
+  responseHeadersPolicy:
+    headers:
+      X-Frame-Options: "DENY"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+      Content-Security-Policy: "default-src 'self'"
+      Referrer-Policy: "strict-origin-when-cross-origin"

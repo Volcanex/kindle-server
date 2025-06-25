@@ -1,0 +1,154 @@
+# Docker Compose for Kindle Content Server local development
+
+version: '3.8'
+
+services:
+  # Flask application
+  app:
+    build:
+      context: ../../backend
+      dockerfile: ../infrastructure/docker/Dockerfile.dev
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/kindle_dev
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_CLOUD_PROJECT=kindle-dev
+      - STORAGE_EMULATOR_HOST=storage:4443
+      - PUBSUB_EMULATOR_HOST=pubsub:8085
+    volumes:
+      - ../../backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      - db
+      - redis
+      - storage
+    networks:
+      - kindle-network
+    restart: unless-stopped
+
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=kindle_dev
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - kindle-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kindle-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Google Cloud Storage emulator
+  storage:
+    image: fsouza/fake-gcs-server:latest
+    ports:
+      - "4443:4443"
+    command: ["-scheme", "http", "-host", "0.0.0.0", "-port", "4443"]
+    networks:
+      - kindle-network
+    restart: unless-stopped
+
+  # Google Cloud Pub/Sub emulator
+  pubsub:
+    image: google/cloud-sdk:slim
+    ports:
+      - "8085:8085"
+    command: >
+      /bin/bash -c "
+      gcloud components install pubsub-emulator --quiet &&
+      gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=kindle-dev
+      "
+    networks:
+      - kindle-network
+    restart: unless-stopped
+
+  # pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@kindle.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_LISTEN_PORT=80
+    ports:
+      - "8081:80"
+    depends_on:
+      - db
+    networks:
+      - kindle-network
+    restart: unless-stopped
+    profiles:
+      - tools
+
+  # Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - kindle-network
+    restart: unless-stopped
+    profiles:
+      - tools
+
+  # Nginx for local SSL and load balancing
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - app
+    networks:
+      - kindle-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  kindle-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16

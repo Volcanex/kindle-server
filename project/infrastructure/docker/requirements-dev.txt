@@ -1,0 +1,70 @@
+# Development requirements for Kindle Content Server
+
+# Include production requirements
+-r requirements.txt
+
+# Testing
+pytest==7.4.2
+pytest-cov==4.1.0
+pytest-mock==3.11.1
+pytest-flask==1.3.0
+pytest-asyncio==0.21.1
+coverage==7.3.2
+factory-boy==3.3.0
+
+# Code quality and formatting
+black==23.9.1
+flake8==6.1.0
+isort==5.12.0
+mypy==1.5.1
+pre-commit==3.4.0
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==1.3.0
+
+# Debugging and profiling
+ipdb==0.13.13
+memory-profiler==0.61.0
+line-profiler==4.1.1
+py-spy==0.3.14
+
+# Development utilities
+flask-shell-ipython==1.4.0
+watchdog==3.0.0
+python-decouple==3.8
+
+# Database tools
+alembic==1.12.0
+flask-migrate==4.0.5
+
+# API development
+flask-restx==1.2.0
+flasgger==0.9.7.1
+httpie==3.2.2
+
+# Performance testing
+locust==2.17.0
+
+# Security scanning
+safety==2.3.5
+bandit==1.7.5
+
+# Linting and type checking
+pylint==2.17.5
+vulture==2.10
+pycodestyle==2.11.0
+pydocstyle==6.3.0
+
+# Environment management
+python-dotenv==1.0.0
+environs==9.5.0
+
+# Jupyter for data analysis (optional)
+jupyter==1.0.0
+jupyterlab==4.0.6
+
+# Mock services for testing
+responses==0.23.3
+httpretty==1.1.4
+fakeredis==2.18.1

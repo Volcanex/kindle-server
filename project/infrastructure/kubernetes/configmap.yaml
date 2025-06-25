@@ -1,0 +1,203 @@
+# ConfigMap for Kindle Content Server configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kindle-server-config
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+data:
+  # Application configuration
+  FLASK_ENV: "production"
+  LOG_LEVEL: "INFO"
+  PORT: "8080"
+  
+  # Cache configuration
+  CACHE_TYPE: "redis"
+  CACHE_DEFAULT_TIMEOUT: "300"
+  
+  # Upload configuration
+  MAX_CONTENT_LENGTH: "104857600"  # 100MB
+  UPLOAD_FOLDER: "/tmp/uploads"
+  ALLOWED_EXTENSIONS: "pdf,epub,mobi,azw,azw3,txt"
+  
+  # News aggregation
+  NEWS_FETCH_INTERVAL: "3600"     # 1 hour
+  NEWS_RETENTION_DAYS: "30"
+  MAX_ARTICLES_PER_SOURCE: "50"
+  
+  # Sync configuration
+  SYNC_TIMEOUT: "300"             # 5 minutes
+  MAX_SYNC_RETRIES: "3"
+  SYNC_BATCH_SIZE: "10"
+  
+  # Security configuration
+  BCRYPT_LOG_ROUNDS: "12"
+  JWT_ACCESS_TOKEN_EXPIRES: "3600"  # 1 hour
+  JWT_REFRESH_TOKEN_EXPIRES: "2592000"  # 30 days
+  
+  # CORS configuration
+  CORS_ORIGINS: "https://kindle.example.com,https://api.kindle.example.com"
+  CORS_METHODS: "GET,POST,PUT,DELETE,OPTIONS"
+  CORS_HEADERS: "Content-Type,Authorization,X-Requested-With"
+  
+  # Rate limiting
+  RATELIMIT_STORAGE_URL: "redis://redis:6379/1"
+  RATELIMIT_DEFAULT: "100 per hour"
+  RATELIMIT_LOGIN: "5 per minute"
+  RATELIMIT_UPLOAD: "10 per hour"
+  
+  # Monitoring
+  METRICS_ENABLED: "true"
+  HEALTH_CHECK_ENABLED: "true"
+  PROMETHEUS_METRICS_PATH: "/metrics"
+  
+  # Feature flags
+  FEATURE_NEWS_AGGREGATION: "true"
+  FEATURE_BOOK_UPLOAD: "true"
+  FEATURE_KINDLE_SYNC: "true"
+  FEATURE_USER_REGISTRATION: "true"
+  
+  # External services
+  GOOGLE_CLOUD_PROJECT: "kindle-content-server"
+  GOOGLE_CLOUD_REGION: "us-central1"
+  
+  # Logging configuration
+  logging.conf: |
+    [loggers]
+    keys=root,app,werkzeug
+    
+    [handlers]
+    keys=console,file,gcp
+    
+    [formatters]
+    keys=standard,json
+    
+    [logger_root]
+    level=INFO
+    handlers=console,gcp
+    
+    [logger_app]
+    level=INFO
+    handlers=console,file,gcp
+    qualname=app
+    propagate=0
+    
+    [logger_werkzeug]
+    level=WARNING
+    handlers=console
+    qualname=werkzeug
+    propagate=0
+    
+    [handler_console]
+    class=StreamHandler
+    level=INFO
+    formatter=json
+    args=(sys.stdout,)
+    
+    [handler_file]
+    class=handlers.RotatingFileHandler
+    level=INFO
+    formatter=standard
+    args=('/app/logs/app.log', 'a', 50000000, 5)
+    
+    [handler_gcp]
+    class=google.cloud.logging.handlers.CloudLoggingHandler
+    level=INFO
+    formatter=json
+    
+    [formatter_standard]
+    format=%(asctime)s [%(levelname)s] %(name)s: %(message)s
+    datefmt=%Y-%m-%d %H:%M:%S
+    
+    [formatter_json]
+    class=pythonjsonlogger.jsonlogger.JsonFormatter
+    format=%(asctime)s %(name)s %(levelname)s %(message)s
+  
+  # Nginx configuration for sidecar proxy (if needed)
+  nginx.conf: |
+    events {
+        worker_connections 1024;
+    }
+    
+    http {
+        upstream app {
+            server localhost:8080;
+        }
+        
+        server {
+            listen 80;
+            server_name _;
+            
+            # Health check endpoint
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+            
+            # Proxy to Flask app
+            location / {
+                proxy_pass http://app;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                
+                # Timeout settings
+                proxy_connect_timeout 30s;
+                proxy_send_timeout 30s;
+                proxy_read_timeout 30s;
+                
+                # Buffer settings
+                proxy_buffer_size 4k;
+                proxy_buffers 8 4k;
+                proxy_busy_buffers_size 8k;
+            }
+            
+            # Static files (if needed)
+            location /static {
+                root /app;
+                expires 1d;
+                add_header Cache-Control "public, immutable";
+            }
+        }
+    }
+---
+# Environment-specific configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kindle-server-env-config
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    environment: production
+data:
+  # Production-specific settings
+  FLASK_DEBUG: "false"
+  TESTING: "false"
+  
+  # Database settings
+  DB_POOL_SIZE: "20"
+  DB_MAX_OVERFLOW: "30"
+  DB_POOL_TIMEOUT: "30"
+  DB_POOL_RECYCLE: "3600"
+  
+  # Redis settings
+  REDIS_POOL_SIZE: "20"
+  REDIS_POOL_TIMEOUT: "30"
+  
+  # Gunicorn settings
+  GUNICORN_WORKERS: "4"
+  GUNICORN_WORKER_CLASS: "sync"
+  GUNICORN_WORKER_CONNECTIONS: "1000"
+  GUNICORN_MAX_REQUESTS: "1000"
+  GUNICORN_MAX_REQUESTS_JITTER: "100"
+  GUNICORN_TIMEOUT: "30"
+  GUNICORN_KEEPALIVE: "2"
+  
+  # Performance tuning
+  CACHE_REDIS_DB: "0"
+  SESSION_REDIS_DB: "1"
+  CELERY_REDIS_DB: "2"

@@ -1,0 +1,276 @@
+# RBAC configuration for Kindle Content Server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kindle-server
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+  annotations:
+    # Workload Identity annotation for Google Cloud
+    iam.gke.io/gcp-service-account: kindle-server-cloud-run@kindle-content-server.iam.gserviceaccount.com
+---
+# Role for application-specific permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: kindle-server
+  name: kindle-server-role
+  labels:
+    app: kindle-server
+rules:
+# ConfigMap permissions
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+  resourceNames: ["kindle-server-config", "kindle-server-env-config"]
+
+# Secret permissions (read-only)
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+  resourceNames: ["kindle-server-secrets", "kindle-server-ssl-certs"]
+
+# Pod permissions for health checks and debugging
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+# Service permissions
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+
+# Event permissions for logging
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+# Lease permissions for leader election (if needed)
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# RoleBinding to associate ServiceAccount with Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kindle-server-rolebinding
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+subjects:
+- kind: ServiceAccount
+  name: kindle-server
+  namespace: kindle-server
+roleRef:
+  kind: Role
+  name: kindle-server-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole for cross-namespace operations (if needed)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kindle-server-clusterrole
+  labels:
+    app: kindle-server
+rules:
+# Node metrics for autoscaling
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+
+# Custom metrics for HPA
+- apiGroups: ["custom.metrics.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+
+# External metrics for advanced autoscaling
+- apiGroups: ["external.metrics.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+---
+# ClusterRoleBinding for cluster-wide permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kindle-server-clusterrolebinding
+  labels:
+    app: kindle-server
+subjects:
+- kind: ServiceAccount
+  name: kindle-server
+  namespace: kindle-server
+roleRef:
+  kind: ClusterRole
+  name: kindle-server-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+# Service Account for monitoring
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kindle-server-monitoring
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: monitoring
+---
+# Role for monitoring service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: kindle-server
+  name: kindle-server-monitoring-role
+  labels:
+    app: kindle-server
+    component: monitoring
+rules:
+# Metrics access
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+
+# Service monitor access
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# RoleBinding for monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kindle-server-monitoring-rolebinding
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: monitoring
+subjects:
+- kind: ServiceAccount
+  name: kindle-server-monitoring
+  namespace: kindle-server
+roleRef:
+  kind: Role
+  name: kindle-server-monitoring-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Service Account for backup operations
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kindle-server-backup
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: backup
+  annotations:
+    iam.gke.io/gcp-service-account: kindle-server-backup@kindle-content-server.iam.gserviceaccount.com
+---
+# Role for backup operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: kindle-server
+  name: kindle-server-backup-role
+  labels:
+    app: kindle-server
+    component: backup
+rules:
+# PVC access for backups
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+
+# Pod access for running backup jobs
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+
+# Job access
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Secret access for backup credentials
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+  resourceNames: ["kindle-server-backup-secrets"]
+---
+# RoleBinding for backup operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kindle-server-backup-rolebinding
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+    component: backup
+subjects:
+- kind: ServiceAccount
+  name: kindle-server-backup
+  namespace: kindle-server
+roleRef:
+  kind: Role
+  name: kindle-server-backup-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kindle-server-network-policy
+  namespace: kindle-server
+  labels:
+    app: kindle-server
+spec:
+  podSelector:
+    matchLabels:
+      app: kindle-server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: gke-system
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow ingress from monitoring
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  # Allow egress to database
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow egress to Redis
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow egress to Google Cloud APIs
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

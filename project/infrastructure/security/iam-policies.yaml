@@ -1,0 +1,384 @@
+# IAM Security Policies for Kindle Content Server
+
+# Custom IAM role for Cloud Run service with minimal permissions
+apiVersion: iam.googleapis.com/v1
+kind: Role
+metadata:
+  name: kindle-server-cloud-run-minimal
+  namespace: security
+spec:
+  title: "Kindle Server Cloud Run Minimal Role"
+  description: "Minimal permissions required for Kindle Content Server Cloud Run service"
+  stage: GA
+  includedPermissions:
+    # Cloud SQL permissions
+    - "cloudsql.instances.connect"
+    - "cloudsql.instances.get"
+    
+    # Storage permissions (specific buckets only)
+    - "storage.objects.create"
+    - "storage.objects.delete"
+    - "storage.objects.get"
+    - "storage.objects.list"
+    - "storage.objects.update"
+    
+    # Secret Manager permissions
+    - "secretmanager.versions.access"
+    
+    # Logging permissions
+    - "logging.logEntries.create"
+    
+    # Monitoring permissions
+    - "monitoring.metricDescriptors.create"
+    - "monitoring.metricDescriptors.get"
+    - "monitoring.metricDescriptors.list"
+    - "monitoring.timeSeries.create"
+    
+    # Trace permissions
+    - "cloudtrace.traces.patch"
+    
+    # Cloud Run permissions (self-introspection)
+    - "run.services.get"
+    - "run.revisions.get"
+---
+# IAM Policy for Cloud Run Service Account
+apiVersion: iam.googleapis.com/v1
+kind: IAMPolicy
+metadata:
+  name: kindle-server-cloud-run-policy
+  namespace: security
+spec:
+  bindings:
+    # Bind the custom minimal role
+    - role: "projects/${PROJECT_ID}/roles/kindle-server-cloud-run-minimal"
+      members:
+        - "serviceAccount:kindle-server-cloud-run@${PROJECT_ID}.iam.gserviceaccount.com"
+    
+    # Storage bucket specific permissions
+    - role: "roles/storage.objectAdmin"
+      members:
+        - "serviceAccount:kindle-server-cloud-run@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Kindle Server Buckets Only"
+        description: "Access only to Kindle Server specific buckets"
+        expression: |
+          resource.name.startsWith("projects/_/buckets/kindle-server-books-") ||
+          resource.name.startsWith("projects/_/buckets/kindle-server-news-") ||
+          resource.name.startsWith("projects/_/buckets/kindle-server-static-")
+    
+    # Secret Manager specific permissions
+    - role: "roles/secretmanager.secretAccessor"
+      members:
+        - "serviceAccount:kindle-server-cloud-run@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Kindle Server Secrets Only"
+        description: "Access only to Kindle Server specific secrets"
+        expression: |
+          resource.name.startsWith("projects/${PROJECT_ID}/secrets/kindle-server-")
+---
+# IAM Policy for Cloud Build Service Account
+apiVersion: iam.googleapis.com/v1
+kind: IAMPolicy
+metadata:
+  name: kindle-server-cloud-build-policy
+  namespace: security
+spec:
+  bindings:
+    # Cloud Build permissions
+    - role: "roles/cloudbuild.builds.builder"
+      members:
+        - "serviceAccount:kindle-server-cloud-build@${PROJECT_ID}.iam.gserviceaccount.com"
+    
+    # Artifact Registry permissions
+    - role: "roles/artifactregistry.writer"
+      members:
+        - "serviceAccount:kindle-server-cloud-build@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Kindle Server Repository Only"
+        description: "Access only to Kindle Server Artifact Registry repository"
+        expression: |
+          resource.name.endsWith("/repositories/kindle-server-repo")
+    
+    # Cloud Run deployment permissions
+    - role: "roles/run.developer"
+      members:
+        - "serviceAccount:kindle-server-cloud-build@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Kindle Server Services Only"
+        description: "Deploy only Kindle Server services"
+        expression: |
+          resource.name.contains("kindle-server")
+    
+    # Service Account User permission (to deploy as service account)
+    - role: "roles/iam.serviceAccountUser"
+      members:
+        - "serviceAccount:kindle-server-cloud-build@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Kindle Server Service Accounts Only"
+        description: "Use only Kindle Server service accounts"
+        expression: |
+          resource.name.contains("kindle-server")
+---
+# Organization Policy Constraints
+apiVersion: orgpolicy.googleapis.com/v1
+kind: Policy
+metadata:
+  name: kindle-server-vm-external-ip-policy
+  namespace: security
+spec:
+  constraint: "constraints/compute.vmExternalIpAccess"
+  listPolicy:
+    deniedValues:
+      - "*"
+  description: "Deny external IP access to VMs for security"
+---
+apiVersion: orgpolicy.googleapis.com/v1
+kind: Policy
+metadata:
+  name: kindle-server-storage-uniform-bucket-policy
+  namespace: security
+spec:
+  constraint: "constraints/storage.uniformBucketLevelAccess"
+  booleanPolicy:
+    enforced: true
+  description: "Enforce uniform bucket-level access for consistent security"
+---
+apiVersion: orgpolicy.googleapis.com/v1
+kind: Policy
+metadata:
+  name: kindle-server-sql-require-ssl-policy
+  namespace: security
+spec:
+  constraint: "constraints/sql.restrictAuthorizedNetworks"
+  listPolicy:
+    allowedValues:
+      - "10.0.0.0/8"    # Private networks only
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+  description: "Restrict Cloud SQL access to private networks only"
+---
+# IAM Conditions for time-based access (development accounts)
+apiVersion: iam.googleapis.com/v1
+kind: IAMPolicy
+metadata:
+  name: kindle-server-developer-access-policy
+  namespace: security
+spec:
+  bindings:
+    # Developer access with time restrictions
+    - role: "roles/run.developer"
+      members:
+        - "group:kindle-developers@example.com"
+      condition:
+        title: "Business Hours Only"
+        description: "Allow access only during business hours (9 AM - 6 PM UTC)"
+        expression: |
+          request.time.getHours() >= 9 && request.time.getHours() < 18
+    
+    # Staging environment access
+    - role: "roles/cloudsql.client"
+      members:
+        - "group:kindle-developers@example.com"
+      condition:
+        title: "Staging Environment Only"
+        description: "Access only to staging resources"
+        expression: |
+          resource.name.contains("staging") || resource.name.contains("dev")
+---
+# Service Account Impersonation Policy
+apiVersion: iam.googleapis.com/v1
+kind: IAMPolicy
+metadata:
+  name: kindle-server-impersonation-policy
+  namespace: security
+spec:
+  bindings:
+    # Allow Cloud Build to impersonate deployment service account
+    - role: "roles/iam.serviceAccountTokenCreator"
+      members:
+        - "serviceAccount:kindle-server-cloud-build@${PROJECT_ID}.iam.gserviceaccount.com"
+      condition:
+        title: "Deployment Service Account Only"
+        description: "Can only impersonate Kindle Server service accounts"
+        expression: |
+          resource.name.endsWith("kindle-server-cloud-run@${PROJECT_ID}.iam.gserviceaccount.com")
+    
+    # Allow developers to impersonate service accounts in dev environment
+    - role: "roles/iam.serviceAccountTokenCreator"
+      members:
+        - "group:kindle-developers@example.com"
+      condition:
+        title: "Dev Environment Service Accounts"
+        description: "Dev environment service account impersonation"
+        expression: |
+          resource.name.contains("dev") && 
+          request.time.getHours() >= 9 && request.time.getHours() < 18
+---
+# Security Command Center (SCC) Custom Finding Types
+apiVersion: securitycenter.googleapis.com/v1
+kind: SecuritySource
+metadata:
+  name: kindle-server-security-source
+  namespace: security
+spec:
+  displayName: "Kindle Content Server Security"
+  description: "Security findings for Kindle Content Server application"
+  findingConfigs:
+    - findingType: "AUTHENTICATION_ANOMALY"
+      displayName: "Authentication Anomaly"
+      description: "Unusual authentication patterns detected"
+      severity: "MEDIUM"
+      
+    - findingType: "EXCESSIVE_PERMISSIONS"
+      displayName: "Excessive Permissions"
+      description: "Service account with more permissions than needed"
+      severity: "LOW"
+      
+    - findingType: "UNENCRYPTED_DATA"
+      displayName: "Unencrypted Data"
+      description: "Data stored without encryption"
+      severity: "HIGH"
+      
+    - findingType: "POLICY_VIOLATION"
+      displayName: "Security Policy Violation"
+      description: "Violation of organizational security policies"
+      severity: "MEDIUM"
+---
+# Binary Authorization Policy for Container Security
+apiVersion: binaryauthorization.googleapis.com/v1
+kind: Policy
+metadata:
+  name: kindle-server-binary-authorization
+  namespace: security
+spec:
+  defaultAdmissionRule:
+    enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG
+    evaluationMode: REQUIRE_ATTESTATION
+    requireAttestationsBy:
+      - projects/${PROJECT_ID}/attestors/kindle-server-security-attestor
+      - projects/${PROJECT_ID}/attestors/kindle-server-quality-attestor
+  
+  clusterAdmissionRules:
+    "${REGION}.kindle-cluster":
+      enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG
+      evaluationMode: REQUIRE_ATTESTATION
+      requireAttestationsBy:
+        - projects/${PROJECT_ID}/attestors/kindle-server-security-attestor
+  
+  description: "Binary Authorization policy for Kindle Server containers"
+---
+# VPC Security Policy
+apiVersion: compute.googleapis.com/v1
+kind: SecurityPolicy
+metadata:
+  name: kindle-server-vpc-security-policy
+  namespace: security
+spec:
+  description: "Security policy for Kindle Server VPC"
+  
+  rules:
+    # Rate limiting rule
+    - priority: 1000
+      description: "Rate limit requests"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            - "*"
+      rateLimitOptions:
+        conformAction: "allow"
+        exceedAction: "deny-429"
+        enforceOnKey: "IP"
+        rateLimitThreshold:
+          count: 100
+          intervalSec: 60
+    
+    # Block known bad IPs
+    - priority: 2000
+      description: "Block malicious IPs"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            - "192.0.2.0/24"    # Example malicious range
+      action: "deny-403"
+    
+    # Allow legitimate traffic
+    - priority: 2147483647  # Default rule (lowest priority)
+      description: "Default allow"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            - "*"
+      action: "allow"
+---
+# Data Loss Prevention (DLP) Configuration
+apiVersion: privacy.googleapis.com/v1
+kind: DeidentifyTemplate
+metadata:
+  name: kindle-server-dlp-template
+  namespace: security
+spec:
+  displayName: "Kindle Server Data Deidentification"
+  description: "Template for deidentifying sensitive data in Kindle Server"
+  
+  deidentifyConfig:
+    infoTypeTransformations:
+      transformations:
+        # Mask email addresses
+        - infoTypes:
+            - name: "EMAIL_ADDRESS"
+          primitiveTransformation:
+            characterMaskConfig:
+              maskingCharacter: "*"
+              numberToMask: 5
+        
+        # Encrypt user IDs
+        - infoTypes:
+            - name: "USER_ID"
+          primitiveTransformation:
+            cryptoHashConfig:
+              cryptoKey:
+                kmsWrapped:
+                  wrappedKey: "CiQA..."
+                  cryptoKeyName: "projects/${PROJECT_ID}/locations/global/keyRings/kindle-server/cryptoKeys/user-data"
+        
+        # Redact IP addresses
+        - infoTypes:
+            - name: "IP_ADDRESS"
+          primitiveTransformation:
+            replaceConfig:
+              newValue:
+                stringValue: "[REDACTED]"
+---
+# Key Management Service (KMS) Configuration
+apiVersion: cloudkms.googleapis.com/v1
+kind: KeyRing
+metadata:
+  name: kindle-server-keyring
+  namespace: security
+spec:
+  location: global
+  displayName: "Kindle Server Key Ring"
+---
+apiVersion: cloudkms.googleapis.com/v1
+kind: CryptoKey
+metadata:
+  name: kindle-server-data-encryption-key
+  namespace: security
+spec:
+  keyRing: "projects/${PROJECT_ID}/locations/global/keyRings/kindle-server-keyring"
+  purpose: "ENCRYPT_DECRYPT"
+  versionTemplate:
+    algorithm: "GOOGLE_SYMMETRIC_ENCRYPTION"
+    protectionLevel: "SOFTWARE"
+  
+  rotationSchedule:
+    nextRotationTime: "2024-07-01T00:00:00Z"
+    rotationPeriod: "7776000s"  # 90 days
+  
+  labels:
+    app: "kindle-server"
+    environment: "production"
+    data-classification: "sensitive"

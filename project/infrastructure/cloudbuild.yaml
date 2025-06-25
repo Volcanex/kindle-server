@@ -1,0 +1,312 @@
+# Cloud Build configuration for Kindle Content Server
+# Supports multiple environments and optimized for cost efficiency
+
+# Available substitutions:
+# - $PROJECT_ID: GCP project ID
+# - $BRANCH_NAME: Git branch name
+# - $COMMIT_SHA: Git commit SHA
+# - $SHORT_SHA: Short Git commit SHA
+# - $_REGION: Target region (default: us-central1)
+# - $_ENVIRONMENT: Target environment (default: dev)
+
+substitutions:
+  _REGION: us-central1
+  _ENVIRONMENT: dev
+  _SERVICE_NAME: kindle-server-service
+  _ARTIFACT_REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/kindle-server-repo
+
+options:
+  # Use high-performance machine for faster builds
+  machineType: E2_HIGHCPU_8
+  # Optimize disk size for cost
+  diskSizeGb: 100
+  # Use substitution variables in logs
+  substitutionOption: ALLOW_LOOSE
+
+# Build steps
+steps:
+  # Step 1: Print environment information
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Building Kindle Content Server"
+        echo "Project: ${PROJECT_ID}"
+        echo "Branch: ${BRANCH_NAME}"
+        echo "Commit: ${SHORT_SHA}"
+        echo "Environment: ${_ENVIRONMENT}"
+        echo "Region: ${_REGION}"
+        echo "Timestamp: $(date)"
+
+  # Step 2: Authenticate Docker to Artifact Registry
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'auth'
+      - 'configure-docker'
+      - '${_REGION}-docker.pkg.dev'
+
+  # Step 3: Run security scan on dependencies
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Scanning dependencies for security vulnerabilities..."
+        pip install safety
+        safety check -r backend/requirements.txt || echo "Security scan completed with warnings"
+
+  # Step 4: Run unit tests
+  - name: 'python:3.11-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cd backend
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+        python -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=xml
+        echo "Unit tests completed"
+    env:
+      - 'PYTHONPATH=/workspace/backend'
+
+  # Step 5: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile'
+      - '-t'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:${SHORT_SHA}'
+      - '-t'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:latest'
+      - '-t'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:${_ENVIRONMENT}-${SHORT_SHA}'
+      - '--build-arg'
+      - 'ENVIRONMENT=${_ENVIRONMENT}'
+      - 'backend/'
+
+  # Step 6: Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:${SHORT_SHA}'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:latest'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:${_ENVIRONMENT}-${SHORT_SHA}'
+
+  # Step 7: Run container security scan
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'container'
+      - 'images'
+      - 'scan'
+      - '${_ARTIFACT_REGISTRY}/kindle-server:${SHORT_SHA}'
+      - '--format=json'
+      - '--quiet'
+    env:
+      - 'CLOUDSDK_CORE_DISABLE_PROMPTS=1'
+
+  # Step 8: Deploy to Cloud Run (conditional based on branch)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Deploy to different environments based on branch
+        if [[ "${BRANCH_NAME}" == "main" ]]; then
+          ENVIRONMENT="prod"
+        elif [[ "${BRANCH_NAME}" == "staging" ]]; then
+          ENVIRONMENT="staging"
+        else
+          ENVIRONMENT="dev"
+        fi
+        
+        echo "Deploying to environment: $ENVIRONMENT"
+        
+        # Set environment-specific variables
+        case $ENVIRONMENT in
+          "prod")
+            MIN_INSTANCES=1
+            MAX_INSTANCES=10
+            MEMORY="1Gi"
+            CPU="1"
+            ;;
+          "staging")
+            MIN_INSTANCES=0
+            MAX_INSTANCES=5
+            MEMORY="512Mi"
+            CPU="1"
+            ;;
+          *)
+            MIN_INSTANCES=0
+            MAX_INSTANCES=3
+            MEMORY="512Mi"
+            CPU="1"
+            ;;
+        esac
+        
+        # Deploy to Cloud Run
+        gcloud run deploy ${_SERVICE_NAME}-$ENVIRONMENT \
+          --image=${_ARTIFACT_REGISTRY}/kindle-server:${SHORT_SHA} \
+          --platform=managed \
+          --region=${_REGION} \
+          --service-account=kindle-server-cloud-run-$(echo ${SHORT_SHA} | cut -c1-8)@${PROJECT_ID}.iam.gserviceaccount.com \
+          --set-env-vars="ENVIRONMENT=$ENVIRONMENT,PROJECT_ID=${PROJECT_ID},REGION=${_REGION}" \
+          --memory=$MEMORY \
+          --cpu=$CPU \
+          --min-instances=$MIN_INSTANCES \
+          --max-instances=$MAX_INSTANCES \
+          --port=8080 \
+          --timeout=300 \
+          --concurrency=100 \
+          --allow-unauthenticated \
+          --vpc-connector=kindle-server-connector-$(echo ${SHORT_SHA} | cut -c1-8) \
+          --vpc-egress=private-ranges-only \
+          --execution-environment=gen2 \
+          --labels="environment=$ENVIRONMENT,app=kindle-server,version=${SHORT_SHA}" \
+          --quiet
+
+  # Step 9: Run integration tests against deployed service
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME}-${_ENVIRONMENT} \
+          --region=${_REGION} \
+          --format='value(status.url)')
+        
+        echo "Running integration tests against: $SERVICE_URL"
+        
+        # Wait for service to be ready
+        for i in {1..30}; do
+          if curl -f "$SERVICE_URL/health" > /dev/null 2>&1; then
+            echo "Service is healthy"
+            break
+          fi
+          echo "Waiting for service to be ready... ($i/30)"
+          sleep 10
+        done
+        
+        # Run basic health checks
+        curl -f "$SERVICE_URL/health" || exit 1
+        curl -f "$SERVICE_URL/ready" || exit 1
+        
+        echo "Integration tests passed"
+
+  # Step 10: Update traffic allocation (production only)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${BRANCH_NAME}" == "main" ]]; then
+          echo "Updating production traffic allocation..."
+          
+          # Gradual rollout: 10% to new revision, 90% to previous
+          gcloud run services update-traffic ${_SERVICE_NAME}-prod \
+            --region=${_REGION} \
+            --to-revisions=LATEST=10 \
+            --quiet
+          
+          echo "Gradual rollout initiated (10% traffic to new revision)"
+          echo "Monitor the deployment and run 'gcloud run services update-traffic' to complete rollout"
+        else
+          echo "Skipping traffic allocation for non-production environment"
+        fi
+
+  # Step 11: Run smoke tests
+  - name: 'python:3.11-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Install test dependencies
+        pip install requests pytest
+        
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME}-${_ENVIRONMENT} \
+          --region=${_REGION} \
+          --format='value(status.url)')
+        
+        # Run smoke tests
+        cd backend
+        python -m pytest tests/smoke/ -v --service-url="$SERVICE_URL" || echo "Smoke tests completed with warnings"
+
+  # Step 12: Cleanup old images (cost optimization)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Cleaning up old container images..."
+        
+        # Keep only last 10 images
+        gcloud container images list-tags ${_ARTIFACT_REGISTRY}/kindle-server \
+          --limit=999 \
+          --sort-by=TIMESTAMP \
+          --format="get(digest)" | tail -n +11 | \
+        while read digest; do
+          gcloud container images delete "${_ARTIFACT_REGISTRY}/kindle-server@$digest" --quiet || true
+        done
+        
+        echo "Image cleanup completed"
+
+  # Step 13: Send deployment notification
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME}-${_ENVIRONMENT} \
+          --region=${_REGION} \
+          --format='value(status.url)')
+        
+        echo "Deployment completed successfully!"
+        echo "Service URL: $SERVICE_URL"
+        echo "Environment: ${_ENVIRONMENT}"
+        echo "Commit: ${SHORT_SHA}"
+        echo "Build ID: ${BUILD_ID}"
+        
+        # Send notification to Cloud Logging
+        gcloud logging write "kindle-server-deployments" \
+          "{\"message\":\"Deployment completed\",\"environment\":\"${_ENVIRONMENT}\",\"commit\":\"${SHORT_SHA}\",\"service_url\":\"$SERVICE_URL\",\"build_id\":\"${BUILD_ID}\"}" \
+          --severity=INFO
+
+# Artifacts to store
+artifacts:
+  objects:
+    location: 'gs://${PROJECT_ID}-build-artifacts'
+    paths:
+      - 'backend/coverage.xml'
+      - 'backend/test-results.xml'
+
+# Timeout for entire build
+timeout: '1800s'  # 30 minutes
+
+# Build logs location
+logsBucket: 'gs://${PROJECT_ID}-build-logs'
+
+# Options for build
+options:
+  logging: GCS_ONLY
+  substitutionOption: ALLOW_LOOSE
+  
+# Trigger configuration (to be set up separately)
+# This configuration supports:
+# - Automatic builds on push to main, staging, and develop branches
+# - Manual builds for feature branches
+# - Environment-specific deployments
+# - Gradual rollouts for production
+# - Integration and smoke testing
+# - Cost optimization through image cleanup

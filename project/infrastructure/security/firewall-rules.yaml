@@ -1,0 +1,476 @@
+# Firewall Rules and Network Security for Kindle Content Server
+
+# VPC Firewall Rules
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-internal
+  namespace: security
+spec:
+  name: "kindle-server-allow-internal"
+  description: "Allow internal communication within Kindle Server VPC"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "INGRESS"
+  priority: 1000
+  
+  sourceRanges:
+    - "10.0.0.0/24"    # Main subnet
+    - "10.1.0.0/16"    # Pods secondary range
+    - "10.2.0.0/16"    # Services secondary range
+    - "10.3.0.0/28"    # VPC connector range
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["0-65535"]
+    - IPProtocol: "udp"
+      ports: ["0-65535"]
+    - IPProtocol: "icmp"
+  
+  targetTags:
+    - "kindle-server-internal"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Allow ingress from Google Cloud Load Balancers
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-lb-health-checks
+  namespace: security
+spec:
+  name: "kindle-server-allow-lb-health-checks"
+  description: "Allow health checks from Google Cloud Load Balancers"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "INGRESS"
+  priority: 1000
+  
+  sourceRanges:
+    - "130.211.0.0/22"  # Google Cloud Load Balancer health check ranges
+    - "35.191.0.0/16"
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["8080", "80", "443"]
+  
+  targetTags:
+    - "kindle-server-lb-backend"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Allow ingress from Identity-Aware Proxy
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-iap
+  namespace: security
+spec:
+  name: "kindle-server-allow-iap"
+  description: "Allow ingress from Identity-Aware Proxy"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "INGRESS"
+  priority: 1000
+  
+  sourceRanges:
+    - "35.235.240.0/20"  # IAP source range
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["8080", "443"]
+  
+  targetTags:
+    - "kindle-server-iap-backend"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Allow SSH for debugging (development only)
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-ssh-dev
+  namespace: security
+spec:
+  name: "kindle-server-allow-ssh-dev"
+  description: "Allow SSH access for development and debugging"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "INGRESS"
+  priority: 1100
+  
+  sourceRanges:
+    - "35.235.240.0/20"  # Google Cloud Shell IP range
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["22"]
+  
+  targetTags:
+    - "kindle-server-ssh-allowed"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+  
+  # Only apply in development environments
+  disabled: true  # Set to false for dev environments
+---
+# Deny all other ingress traffic (explicit deny)
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-deny-all-ingress
+  namespace: security
+spec:
+  name: "kindle-server-deny-all-ingress"
+  description: "Deny all other ingress traffic to Kindle Server VPC"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "INGRESS"
+  priority: 65534  # Lower priority than allow rules
+  
+  sourceRanges:
+    - "0.0.0.0/0"
+  
+  denied:
+    - IPProtocol: "all"
+  
+  targetTags:
+    - "kindle-server-internal"
+    - "kindle-server-lb-backend"
+    - "kindle-server-iap-backend"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Allow egress to Google Cloud APIs
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-google-apis
+  namespace: security
+spec:
+  name: "kindle-server-allow-google-apis"
+  description: "Allow egress to Google Cloud APIs"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "EGRESS"
+  priority: 1000
+  
+  destinationRanges:
+    - "199.36.153.8/30"    # restricted.googleapis.com
+    - "199.36.153.4/30"    # private.googleapis.com
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["443"]
+  
+  targetTags:
+    - "kindle-server-app"
+  
+  logConfig:
+    enable: false  # High volume, disable for cost optimization
+---
+# Allow egress to Cloud SQL
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-cloud-sql
+  namespace: security
+spec:
+  name: "kindle-server-allow-cloud-sql"
+  description: "Allow egress to Cloud SQL instances"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "EGRESS"
+  priority: 1000
+  
+  destinationRanges:
+    - "10.0.0.0/8"     # Private IP ranges for Cloud SQL
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["5432", "3306"]  # PostgreSQL and MySQL
+  
+  targetTags:
+    - "kindle-server-app"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Allow DNS resolution
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-dns
+  namespace: security
+spec:
+  name: "kindle-server-allow-dns"
+  description: "Allow DNS resolution"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "EGRESS"
+  priority: 1000
+  
+  destinationRanges:
+    - "0.0.0.0/0"
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["53"]
+    - IPProtocol: "udp"
+      ports: ["53"]
+  
+  targetTags:
+    - "kindle-server-app"
+  
+  logConfig:
+    enable: false  # High volume DNS queries
+---
+# Allow egress for external news sources (HTTP/HTTPS)
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-allow-news-sources
+  namespace: security
+spec:
+  name: "kindle-server-allow-news-sources"
+  description: "Allow egress to external news sources"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "EGRESS"
+  priority: 1100
+  
+  destinationRanges:
+    - "0.0.0.0/0"
+  
+  allowed:
+    - IPProtocol: "tcp"
+      ports: ["80", "443"]
+  
+  targetTags:
+    - "kindle-server-news-fetcher"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Deny all other egress traffic
+apiVersion: compute.googleapis.com/v1
+kind: Firewall
+metadata:
+  name: kindle-server-deny-all-egress
+  namespace: security
+spec:
+  name: "kindle-server-deny-all-egress"
+  description: "Deny all other egress traffic from Kindle Server VPC"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  direction: "EGRESS"
+  priority: 65534  # Lower priority than allow rules
+  
+  destinationRanges:
+    - "0.0.0.0/0"
+  
+  denied:
+    - IPProtocol: "all"
+  
+  targetTags:
+    - "kindle-server-app"
+  
+  logConfig:
+    enable: true
+    metadata: "INCLUDE_ALL_METADATA"
+---
+# Cloud Armor Security Policy
+apiVersion: compute.googleapis.com/v1
+kind: SecurityPolicy
+metadata:
+  name: kindle-server-armor-policy
+  namespace: security
+spec:
+  name: "kindle-server-armor-policy"
+  description: "Cloud Armor security policy for Kindle Content Server"
+  
+  rules:
+    # Rate limiting for general requests
+    - priority: 1000
+      description: "Rate limit general requests"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges: ["*"]
+      rateLimitOptions:
+        conformAction: "allow"
+        exceedAction: "deny-429"
+        enforceOnKey: "IP"
+        rateLimitThreshold:
+          count: 100
+          intervalSec: 60
+      preview: false
+    
+    # Stricter rate limiting for authentication endpoints
+    - priority: 1100
+      description: "Rate limit authentication requests"
+      match:
+        expr:
+          expression: "request.path.matches('/api/auth/.*')"
+      rateLimitOptions:
+        conformAction: "allow"
+        exceedAction: "deny-429"
+        enforceOnKey: "IP"
+        rateLimitThreshold:
+          count: 10
+          intervalSec: 60
+      preview: false
+    
+    # Block known malicious IPs (example)
+    - priority: 2000
+      description: "Block known malicious IP ranges"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            - "192.0.2.0/24"    # Example test range
+            - "198.51.100.0/24" # Example test range
+      action: "deny-403"
+      preview: false
+    
+    # Block requests with suspicious user agents
+    - priority: 2100
+      description: "Block suspicious user agents"
+      match:
+        expr:
+          expression: |
+            has(request.headers['user-agent']) && 
+            (request.headers['user-agent'].matches('.*bot.*') || 
+             request.headers['user-agent'].matches('.*crawler.*') ||
+             request.headers['user-agent'].matches('.*scraper.*'))
+      action: "deny-403"
+      preview: false
+    
+    # OWASP ModSecurity Core Rule Set (CRS) integration
+    - priority: 3000
+      description: "OWASP CRS SQL injection protection"
+      match:
+        expr:
+          expression: |
+            evaluatePreconfiguredExpr('sqli-stable')
+      action: "deny-403"
+      preview: false
+    
+    - priority: 3100
+      description: "OWASP CRS XSS protection"
+      match:
+        expr:
+          expression: |
+            evaluatePreconfiguredExpr('xss-stable')
+      action: "deny-403"
+      preview: false
+    
+    - priority: 3200
+      description: "OWASP CRS Local File Inclusion protection"
+      match:
+        expr:
+          expression: |
+            evaluatePreconfiguredExpr('lfi-stable')
+      action: "deny-403"
+      preview: false
+    
+    # Geographic restrictions (if needed)
+    - priority: 4000
+      description: "Geographic restrictions"
+      match:
+        expr:
+          expression: |
+            origin.region_code == 'CN' || 
+            origin.region_code == 'KP' ||
+            origin.region_code == 'IR'
+      action: "deny-403"
+      preview: true  # Set to false to enforce
+    
+    # Default allow rule
+    - priority: 2147483647  # Lowest priority (default)
+      description: "Default allow"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges: ["*"]
+      action: "allow"
+      preview: false
+  
+  # Adaptive protection settings
+  adaptiveProtectionConfig:
+    layer7DdosDefenseConfig:
+      enable: true
+      ruleVisibility: "STANDARD"
+    autoDeployConfig:
+      loadThreshold: 0.1
+      confidenceThreshold: 0.5
+      impactedBaselineThreshold: 0.01
+      expiration:
+        seconds: 7200  # 2 hours
+---
+# Network Security Policy for Private Google Access
+apiVersion: compute.googleapis.com/v1
+kind: Router
+metadata:
+  name: kindle-server-nat-router
+  namespace: security
+spec:
+  name: "kindle-server-nat-router"
+  description: "NAT router for Kindle Server private subnet"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  region: "${REGION}"
+  
+  nats:
+    - name: "kindle-server-nat"
+      sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_IP_RANGES"
+      natIpAllocateOption: "AUTO_ONLY"
+      
+      # Logging configuration
+      logConfig:
+        enable: true
+        filter: "ERRORS_ONLY"
+      
+      # Minimum ports per VM to prevent port exhaustion
+      minPortsPerVm: 64
+      
+      # UDP idle timeout
+      udpIdleTimeoutSec: 30
+      
+      # TCP established connection timeout
+      tcpEstablishedIdleTimeoutSec: 1200
+      
+      # TCP transitory connection timeout
+      tcpTransitoryIdleTimeoutSec: 30
+---
+# VPC Flow Logs Configuration
+apiVersion: compute.googleapis.com/v1
+kind: Subnetwork
+metadata:
+  name: kindle-server-subnet-with-flow-logs
+  namespace: security
+spec:
+  name: "kindle-server-subnet"
+  description: "Kindle Server subnet with flow logs enabled"
+  network: "projects/${PROJECT_ID}/global/networks/kindle-server-vpc"
+  region: "${REGION}"
+  ipCidrRange: "10.0.0.0/24"
+  
+  # Enable flow logs for security monitoring
+  logConfig:
+    enable: true
+    flowSampling: 0.5        # 50% sampling to balance cost and visibility
+    aggregationInterval: "INTERVAL_5_SEC"
+    metadata: "INCLUDE_ALL_METADATA"
+    filterExpr: "true"       # Log all traffic
+  
+  # Private Google Access
+  privateIpGoogleAccess: true
+  
+  # Secondary IP ranges for GKE (if needed)
+  secondaryIpRanges:
+    - rangeName: "pods"
+      ipCidrRange: "10.1.0.0/16"
+    - rangeName: "services"
+      ipCidrRange: "10.2.0.0/16"

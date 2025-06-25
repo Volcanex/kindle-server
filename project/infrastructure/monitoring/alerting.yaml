@@ -1,0 +1,421 @@
+# Cloud Monitoring alerting policies for Kindle Content Server
+
+# Notification channels configuration
+apiVersion: monitoring.googleapis.com/v1
+kind: NotificationChannel
+metadata:
+  name: kindle-server-email-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Email Alerts"
+  description: "Email notifications for Kindle Content Server alerts"
+  type: "email"
+  config:
+    email_address: "admin@kindle-server.example.com"
+  enabled: true
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: NotificationChannel
+metadata:
+  name: kindle-server-slack-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Slack Alerts"
+  description: "Slack notifications for Kindle Content Server alerts"
+  type: "slack"
+  config:
+    webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+    channel: "#kindle-server-alerts"
+    title: "Kindle Server Alert"
+  enabled: true
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: NotificationChannel
+metadata:
+  name: kindle-server-pagerduty-critical
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server PagerDuty Critical"
+  description: "PagerDuty notifications for critical Kindle Server alerts"
+  type: "pagerduty"
+  config:
+    service_key: "YOUR_PAGERDUTY_SERVICE_KEY"
+  enabled: true
+---
+# Application Performance Monitoring Alerts
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-performance-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Performance Alerts"
+  documentation:
+    content: |
+      # Kindle Server Performance Monitoring
+      
+      This alert policy monitors key performance metrics for the Kindle Content Server:
+      
+      - **High Error Rate**: Triggers when error rate exceeds 5% over 5 minutes
+      - **High Latency**: Triggers when 95th percentile response time exceeds 2 seconds
+      - **High CPU Usage**: Triggers when CPU usage exceeds 80% for 10 minutes
+      - **High Memory Usage**: Triggers when memory usage exceeds 85% for 10 minutes
+      
+      ## Response Procedures
+      
+      1. Check application logs for error patterns
+      2. Verify database connectivity and performance
+      3. Monitor resource utilization trends
+      4. Scale resources if necessary
+      
+      Contact: DevOps Team <devops@example.com>
+    mimeType: "text/markdown"
+  
+  conditions:
+    # High Error Rate Condition
+    - displayName: "High Error Rate (>5%)"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" resource.labels.service_name="kindle-server-service"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 0.05
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_MEAN
+            groupByFields:
+              - "resource.labels.service_name"
+              - "resource.labels.revision_name"
+        trigger:
+          count: 1
+    
+    # High Latency Condition
+    - displayName: "High Response Time (>2s p95)"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="run.googleapis.com/request_latencies"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 2000  # milliseconds
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_DELTA
+            crossSeriesReducer: REDUCE_PERCENTILE_95
+            groupByFields:
+              - "resource.labels.service_name"
+    
+    # High CPU Usage Condition
+    - displayName: "High CPU Usage (>80%)"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="run.googleapis.com/container/cpu/utilizations"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 0.8
+        duration: "600s"  # 10 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_MEAN
+            groupByFields:
+              - "resource.labels.service_name"
+    
+    # High Memory Usage Condition
+    - displayName: "High Memory Usage (>85%)"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="run.googleapis.com/container/memory/utilizations"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 0.85
+        duration: "600s"  # 10 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_MEAN
+            groupByFields:
+              - "resource.labels.service_name"
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email-alerts
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-slack-alerts
+  
+  alertStrategy:
+    autoClose: "86400s"  # 24 hours
+    notificationRateLimit:
+      period: "300s"  # 5 minutes
+  
+  enabled: true
+---
+# Infrastructure Monitoring Alerts
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-infrastructure-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Infrastructure Alerts"
+  documentation:
+    content: |
+      # Infrastructure Monitoring Alerts
+      
+      Monitors critical infrastructure components:
+      
+      - Database connectivity and performance
+      - Storage bucket availability
+      - Network connectivity
+      - Service availability
+      
+      ## Escalation
+      - Warning: Team notification
+      - Critical: PagerDuty + immediate response
+    mimeType: "text/markdown"
+  
+  conditions:
+    # Database Connection Failures
+    - displayName: "Database Connection Failures"
+      conditionThreshold:
+        filter: 'resource.type="cloud_sql_database" metric.type="cloudsql.googleapis.com/database/network/connections"'
+        comparison: COMPARISON_LESS_THAN
+        thresholdValue: 1
+        duration: "180s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_MEAN
+    
+    # Storage Bucket Errors
+    - displayName: "Storage Bucket Access Errors"
+      conditionThreshold:
+        filter: 'resource.type="gcs_bucket" metric.type="storage.googleapis.com/api/request_count" metric.labels.response_code!="200"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 5
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    # Service Availability
+    - displayName: "Service Unavailable"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="run.googleapis.com/container/instance_count"'
+        comparison: COMPARISON_LESS_THAN
+        thresholdValue: 1
+        duration: "60s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_SUM
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email-alerts
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-pagerduty-critical
+  
+  alertStrategy:
+    autoClose: "3600s"  # 1 hour
+  
+  enabled: true
+---
+# Business Logic Alerts
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-business-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Business Logic Alerts"
+  documentation:
+    content: |
+      # Business Logic Monitoring
+      
+      Monitors business-critical operations:
+      
+      - File upload failures
+      - News sync failures  
+      - User authentication issues
+      - Sync operation failures
+      
+      These alerts indicate potential issues with core functionality.
+    mimeType: "text/markdown"
+  
+  conditions:
+    # High Upload Failure Rate
+    - displayName: "High File Upload Failure Rate"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="logging.googleapis.com/user/kindle_server_uploads_failed_total"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 10
+        duration: "600s"  # 10 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    # News Sync Failures
+    - displayName: "News Sync Failures"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="logging.googleapis.com/user/kindle_server_news_sync_failures_total"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 5
+        duration: "1800s"  # 30 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    # Authentication Failures
+    - displayName: "High Authentication Failure Rate"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" jsonPayload.message=~"Authentication failed|Invalid credentials"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 20
+        duration: "300s"  # 5 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email-alerts
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-slack-alerts
+  
+  alertStrategy:
+    autoClose: "7200s"  # 2 hours
+    notificationRateLimit:
+      period: "600s"  # 10 minutes
+  
+  enabled: true
+---
+# Security Alerts
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-security-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Security Alerts"
+  documentation:
+    content: |
+      # Security Monitoring Alerts
+      
+      Monitors security-related events:
+      
+      - Suspicious authentication patterns
+      - Potential brute force attacks
+      - Unusual access patterns
+      - Security policy violations
+      
+      **CRITICAL**: These alerts require immediate investigation.
+    mimeType: "text/markdown"
+  
+  conditions:
+    # Brute Force Detection
+    - displayName: "Potential Brute Force Attack"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" jsonPayload.message=~"Authentication failed" jsonPayload.source_ip!=""'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 50
+        duration: "300s"  # 5 minutes
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+            groupByFields:
+              - "jsonPayload.source_ip"
+    
+    # Unusual Traffic Patterns
+    - displayName: "Unusual Traffic Volume"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" metric.type="run.googleapis.com/request_count"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 1000
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    # Security Policy Violations
+    - displayName: "Security Policy Violations"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" jsonPayload.level="ERROR" jsonPayload.message=~"security|violation|unauthorized"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 1
+        duration: "60s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-pagerduty-critical
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email-alerts
+  
+  alertStrategy:
+    autoClose: "1800s"  # 30 minutes
+  
+  enabled: true
+---
+# Uptime Check Configuration
+apiVersion: monitoring.googleapis.com/v1
+kind: UptimeCheckConfig
+metadata:
+  name: kindle-server-uptime-check
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Health Check"
+  monitoredResource:
+    type: "uptime_url"
+    labels:
+      project_id: ${PROJECT_ID}
+      host: "kindle-server-service-${ENVIRONMENT}.a.run.app"
+  httpCheck:
+    path: "/health"
+    port: 443
+    useSsl: true
+    validateSsl: true
+    requestMethod: "GET"
+    headers:
+      "User-Agent": "GoogleStackdriverMonitoring-UptimeChecks"
+    acceptedResponseStatusCodes:
+      - statusClass: "STATUS_CLASS_2XX"
+  timeout: "10s"
+  period: "300s"  # 5 minutes
+  selectedRegions:
+    - "USA_OREGON"
+    - "USA_IOWA"
+    - "EUROPE_IRELAND"
+  contentMatchers:
+    - content: "healthy"
+      matcher: "CONTAINS_STRING"
+---
+# Uptime Alert Policy
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-uptime-alert
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Uptime Alert"
+  documentation:
+    content: "Alert when Kindle Server health check fails"
+    mimeType: "text/plain"
+  
+  conditions:
+    - displayName: "Uptime check failure"
+      conditionThreshold:
+        filter: 'metric.type="monitoring.googleapis.com/uptime_check/check_passed" resource.type="uptime_url"'
+        comparison: COMPARISON_EQUAL
+        thresholdValue: 0
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_NEXT_OLDER
+            crossSeriesReducer: REDUCE_COUNT_FALSE
+            groupByFields:
+              - "resource.labels.project_id"
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-pagerduty-critical
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email-alerts
+  
+  alertStrategy:
+    autoClose: "1800s"  # 30 minutes
+  
+  enabled: true

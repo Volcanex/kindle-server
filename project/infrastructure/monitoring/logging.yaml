@@ -1,0 +1,347 @@
+# Cloud Logging configuration for Kindle Content Server
+
+# Log-based metrics
+apiVersion: logging.coreos.com/v1
+kind: LoggingConfig
+metadata:
+  name: kindle-server-logging
+  namespace: kindle-server
+spec:
+  # Application logs
+  applicationLogs:
+    - name: flask-app
+      source: /app/logs/app.log
+      format: json
+      labels:
+        app: kindle-server
+        component: backend
+        environment: production
+      fields:
+        timestamp: $.timestamp
+        level: $.level
+        message: $.message
+        module: $.name
+        trace_id: $.trace_id
+        span_id: $.span_id
+        user_id: $.user_id
+        request_id: $.request_id
+    
+    - name: access-logs
+      source: /var/log/nginx/access.log
+      format: nginx_combined
+      labels:
+        app: kindle-server
+        component: proxy
+        log_type: access
+    
+    - name: error-logs
+      source: /var/log/nginx/error.log
+      format: text
+      labels:
+        app: kindle-server
+        component: proxy
+        log_type: error
+  
+  # System logs
+  systemLogs:
+    - name: system
+      source: /var/log/syslog
+      format: syslog
+      labels:
+        component: system
+    
+    - name: docker
+      source: /var/log/docker.log
+      format: json
+      labels:
+        component: docker
+  
+  # Log forwarding to Cloud Logging
+  forwarders:
+    - name: gcp-cloud-logging
+      type: google_cloud_logging
+      config:
+        project_id: ${PROJECT_ID}
+        resource:
+          type: k8s_container
+          labels:
+            project_id: ${PROJECT_ID}
+            location: ${REGION}
+            cluster_name: kindle-cluster
+            namespace_name: kindle-server
+            pod_name: ${POD_NAME}
+            container_name: app
+        labels:
+          app: kindle-server
+          environment: production
+        
+        # Structured logging configuration
+        log_name_field: log_name
+        severity_field: severity
+        timestamp_field: timestamp
+        trace_field: trace
+        span_id_field: span_id
+        
+        # Buffer configuration
+        buffer:
+          flush_interval: 5s
+          chunk_limit_size: 5MB
+          chunk_limit_records: 1000
+          total_limit_size: 64MB
+          overflow_action: drop_oldest_chunk
+        
+        # Retry configuration
+        retry:
+          max_retry_wait: 30s
+          retry_wait: 1s
+          retry_type: exponential_backoff
+        
+        # Rate limiting
+        rate_limit:
+          key_name: container_name
+          rate: 1000
+          per: 60s
+---
+# Fluent Bit configuration for log collection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: kindle-server
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         5
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+        Health_Check  On
+    
+    [INPUT]
+        Name              tail
+        Path              /app/logs/*.log
+        Parser            json
+        Tag               app.*
+        Refresh_Interval  5
+        Mem_Buf_Limit     50MB
+        Skip_Long_Lines   On
+        
+    [INPUT]
+        Name              systemd
+        Tag               systemd.*
+        Systemd_Filter    _SYSTEMD_UNIT=docker.service
+        Read_From_Tail    On
+        
+    [FILTER]
+        Name                kubernetes
+        Match               app.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     app.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+        Annotations         Off
+        Labels              On
+        
+    [FILTER]
+        Name                modify
+        Match               app.*
+        Add                 app kindle-server
+        Add                 environment production
+        Add                 cluster kindle-cluster
+        
+    [FILTER]
+        Name                grep
+        Match               app.*
+        Exclude             level DEBUG
+        
+    [OUTPUT]
+        Name                gcs
+        Match               app.*
+        project_id          ${PROJECT_ID}
+        resource            k8s_container
+        k8s_cluster_name    kindle-cluster
+        k8s_cluster_location ${REGION}
+        labels_key          labels
+        severity_key        level
+        timestamp_key       timestamp
+        trace_key           trace_id
+        span_id_key         span_id
+        
+        # Buffering
+        workers             2
+        flush_interval      5s
+        
+        # Retry logic
+        retry_limit         10
+        retry_wait          1s
+        
+    [OUTPUT]
+        Name                prometheus_exporter
+        Match               app.*
+        host                0.0.0.0
+        port                2021
+        
+  parsers.conf: |
+    [PARSER]
+        Name        json
+        Format      json
+        Time_Key    timestamp
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+        
+    [PARSER]
+        Name        nginx_combined
+        Format      regex
+        Regex       ^(?<remote>[^ ]*) (?<host>[^ ]*) (?<user>[^ ]*) \[(?<time>[^\]]*)\] "(?<method>\S+)(?: +(?<path>[^\"]*?)(?: +\S*)?)?" (?<code>[^ ]*) (?<size>[^ ]*)(?: "(?<referer>[^\"]*)" "(?<agent>[^\"]*)")?$
+        Time_Key    time
+        Time_Format %d/%b/%Y:%H:%M:%S %z
+        
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+---
+# Log-based alerting policy
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertPolicy
+metadata:
+  name: kindle-server-log-alerts
+  namespace: kindle-server
+spec:
+  displayName: "Kindle Server Log-based Alerts"
+  documentation:
+    content: "Alert policies for Kindle Content Server log-based monitoring"
+    mimeType: "text/markdown"
+  
+  conditions:
+    - displayName: "High Error Rate"
+      conditionThreshold:
+        filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" resource.labels.namespace_name="kindle-server" severity>=ERROR'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 10
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+            groupByFields:
+              - "resource.labels.container_name"
+              - "resource.labels.pod_name"
+    
+    - displayName: "Authentication Failures"
+      conditionThreshold:
+        filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" jsonPayload.message=~"Authentication failed|Login failed|Invalid credentials"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 5
+        duration: "180s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    - displayName: "Database Connection Errors"
+      conditionThreshold:
+        filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" jsonPayload.message=~"database.*error|connection.*failed|timeout"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 3
+        duration: "120s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+    
+    - displayName: "Memory Usage Warnings"
+      conditionThreshold:
+        filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" jsonPayload.level="WARNING" jsonPayload.message=~"memory|OOM"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 1
+        duration: "60s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_SUM
+  
+  notificationChannels:
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-email
+    - projects/${PROJECT_ID}/notificationChannels/kindle-server-slack
+  
+  alertStrategy:
+    autoClose: "86400s"  # 24 hours
+    notificationRateLimit:
+      period: "300s"  # 5 minutes
+  
+  enabled: true
+---
+# Custom log-based metrics
+apiVersion: logging.googleapis.com/v1
+kind: LogMetric
+metadata:
+  name: kindle-server-request-count
+spec:
+  name: "kindle_server_requests_total"
+  description: "Total number of HTTP requests to Kindle Server"
+  filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" resource.labels.namespace_name="kindle-server" jsonPayload.method!=""'
+  labelExtractors:
+    method: 'EXTRACT(jsonPayload.method)'
+    status_code: 'EXTRACT(jsonPayload.status_code)'
+    endpoint: 'EXTRACT(jsonPayload.endpoint)'
+  metricDescriptor:
+    metricKind: CUMULATIVE
+    valueType: INT64
+    labels:
+      - key: method
+        valueType: STRING
+      - key: status_code
+        valueType: STRING
+      - key: endpoint
+        valueType: STRING
+---
+apiVersion: logging.googleapis.com/v1
+kind: LogMetric
+metadata:
+  name: kindle-server-response-time
+spec:
+  name: "kindle_server_response_time_seconds"
+  description: "HTTP request response time in seconds"
+  filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" resource.labels.namespace_name="kindle-server" jsonPayload.response_time!=""'
+  valueExtractor: 'EXTRACT(jsonPayload.response_time)'
+  labelExtractors:
+    method: 'EXTRACT(jsonPayload.method)'
+    endpoint: 'EXTRACT(jsonPayload.endpoint)'
+  metricDescriptor:
+    metricKind: GAUGE
+    valueType: DOUBLE
+    labels:
+      - key: method
+        valueType: STRING
+      - key: endpoint
+        valueType: STRING
+---
+apiVersion: logging.googleapis.com/v1
+kind: LogMetric
+metadata:
+  name: kindle-server-error-rate
+spec:
+  name: "kindle_server_errors_total"
+  description: "Total number of errors in Kindle Server"
+  filter: 'resource.type="k8s_container" resource.labels.cluster_name="kindle-cluster" resource.labels.namespace_name="kindle-server" severity>=ERROR'
+  labelExtractors:
+    error_type: 'EXTRACT(jsonPayload.error_type)'
+    module: 'EXTRACT(jsonPayload.name)'
+  metricDescriptor:
+    metricKind: CUMULATIVE
+    valueType: INT64
+    labels:
+      - key: error_type
+        valueType: STRING
+      - key: module
+        valueType: STRING
