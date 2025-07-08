@@ -1,0 +1,27 @@
+# Local Development Dependencies - Minimal Setup for Testing
+# Use this for local development to avoid Google Cloud and PostgreSQL dependencies
+
+# Core Flask Framework
+Flask==3.1.1
+Werkzeug==3.1.3
+
+# Database
+Flask-SQLAlchemy==3.1.1
+
+# CORS and Security
+Flask-CORS==6.0.1
+
+# Development and Testing
+pytest==8.4.1
+pytest-flask==1.3.0
+pytest-cov==6.2.1
+
+# Basic utilities
+python-dateutil==2.9.0.post0
+shortuuid==1.0.13
+
+# File processing (optional for basic testing)
+Pillow==11.3.0
+
+# Type hints
+typing-extensions==4.14.1
