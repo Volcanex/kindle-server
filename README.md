@@ -6,7 +6,7 @@ A comprehensive content management and synchronization system for Kindle devices
 
 ### Production Deployment
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Volcanex/kindle-server
 cd kindle-content-server
 cp .env.example .env
 # Edit .env with your configuration
