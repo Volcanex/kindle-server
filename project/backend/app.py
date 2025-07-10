@@ -15,6 +15,9 @@ import google.cloud.logging
 from routes.sync import sync_bp
 from routes.books import books_bp  
 from routes.news import news_bp
+from routes.rss_feeds import rss_feeds_bp
+from routes.articles import articles_bp
+from routes.kual_api import kual_api_bp
 
 # Import models to ensure they're registered
 from models import db
@@ -46,6 +49,9 @@ def create_app(config_class=Config):
     app.register_blueprint(sync_bp, url_prefix='/api/sync')
     app.register_blueprint(books_bp, url_prefix='/api/books')
     app.register_blueprint(news_bp, url_prefix='/api/news')
+    app.register_blueprint(rss_feeds_bp, url_prefix='/api/rss-feeds')
+    app.register_blueprint(articles_bp, url_prefix='/api/articles')
+    app.register_blueprint(kual_api_bp)  # KUAL API has its own prefix defined
     
     # Health check endpoint for Cloud Run
     @app.route('/health')
@@ -64,7 +70,7 @@ def create_app(config_class=Config):
         return jsonify({
             'service': 'Kindle Content Server Backend',
             'version': os.getenv('SERVICE_VERSION', '1.0.0'),
-            'endpoints': ['/api/sync', '/api/books', '/api/news'],
+            'endpoints': ['/api/sync', '/api/books', '/api/news', '/api/rss-feeds', '/api/articles', '/api/v1'],
             'health': '/health'
         })
     

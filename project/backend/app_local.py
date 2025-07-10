@@ -75,11 +75,12 @@ def create_app(config_class=DevelopmentConfig):
     @app.route('/api/health', methods=['GET', 'OPTIONS'])
     def api_health_check():
         """API Health check endpoint (frontend expects this)"""
+        from datetime import datetime
         return jsonify({
             'status': 'healthy',
             'service': 'kindle-content-server',
             'version': '1.0.0-local',
-            'timestamp': '2025-07-08T14:00:00Z'
+            'timestamp': datetime.now().isoformat() + 'Z'
         })
     
     @app.route('/', methods=['GET', 'OPTIONS'])
@@ -94,7 +95,9 @@ def create_app(config_class=DevelopmentConfig):
                 'health': '/health',
                 'books': '/api/books',
                 'news': '/api/news', 
-                'sync': '/api/sync'
+                'sync': '/api/sync',
+                'rss-feeds': '/api/rss-feeds',
+                'kual-api': '/api/v1'
             }
         })
     
@@ -168,7 +171,7 @@ def create_app(config_class=DevelopmentConfig):
     
     @app.route('/api/news-sources', methods=['POST', 'OPTIONS'])
     def create_news_source():
-        """Create news source"""
+        """Create news source with RSS feed validation"""
         logger.info(f"Create news source request - Method: {request.method}")
         
         if request.method == 'OPTIONS':
@@ -190,6 +193,35 @@ def create_app(config_class=DevelopmentConfig):
                     'error': 'No data provided'
                 }), 400
             
+            # Validate required fields
+            if not data.get('name') or not data.get('url'):
+                return jsonify({
+                    'success': False,
+                    'error': 'Name and URL are required'
+                }), 400
+            
+            # Validate and test RSS feed URL
+            from services.rss_feed_tester import RSSFeedTester, FeedConfiguration
+            
+            rss_url = data.get('url')
+            logger.info(f"Testing RSS feed: {rss_url}")
+            
+            # Quick validation
+            tester = RSSFeedTester()
+            config = FeedConfiguration(max_articles=3, timeout=10, quality_threshold=0.1)
+            
+            is_valid, error_message, metadata = tester.validate_feed_before_save(rss_url, config)
+            
+            if not is_valid:
+                logger.warning(f"RSS feed validation failed: {error_message}")
+                return jsonify({
+                    'success': False,
+                    'error': f'RSS feed validation failed: {error_message}',
+                    'validation_failed': True
+                }), 400
+            
+            logger.info(f"RSS feed validation passed: {metadata}")
+            
             import uuid
             from datetime import datetime
             
@@ -203,7 +235,9 @@ def create_app(config_class=DevelopmentConfig):
                 'isActive': data.get('isActive', True),
                 'createdAt': datetime.now().isoformat(),
                 'lastSync': None,
-                'syncStatus': 'pending'
+                'syncStatus': 'pending',
+                'validationMetadata': metadata,  # Store validation metadata
+                'nextSyncDue': datetime.now().isoformat()  # Due for first sync
             }
             
             logger.info(f"Created news source object: {news_source}")
@@ -214,8 +248,9 @@ def create_app(config_class=DevelopmentConfig):
             
             response_data = {
                 'success': True,
-                'message': f'News source "{news_source["name"]}" created successfully',
-                'data': news_source
+                'message': f'News source "{news_source["name"]}" created successfully (RSS feed validated)',
+                'data': news_source,
+                'validation_passed': True
             }
             
             logger.info(f"Returning response: {response_data}")
@@ -350,7 +385,7 @@ def create_app(config_class=DevelopmentConfig):
     # Sync Status (match frontend expectations)
     @app.route('/api/sync-status', methods=['GET', 'OPTIONS'])
     def get_sync_statuses():
-        """Get sync statuses"""
+        """Get sync statuses - now shows individual articles ready for sync"""
         sync_statuses = []
         
         # Add uploaded books as sync statuses
@@ -361,7 +396,7 @@ def create_app(config_class=DevelopmentConfig):
                 'title': book['title'],
                 'itemName': book['title'],
                 'status': book.get('syncStatus', 'pending'),
-                'timestamp': book['uploadDate'],  # Use upload date as timestamp
+                'timestamp': book['uploadDate'],
                 'lastSync': book.get('lastSync'),
                 'progress': 0 if book.get('syncStatus') == 'pending' else 100,
                 'message': f"Book ready for sync to Kindle" if book.get('syncStatus') == 'pending' else 'Synced successfully',
@@ -373,25 +408,70 @@ def create_app(config_class=DevelopmentConfig):
                 }
             })
         
-        # Add news sources as sync statuses (avoid duplicates)
+        # Simulate articles ready for sync based on news sources
+        from datetime import datetime, timedelta
+        import uuid
+        
+        current_time = datetime.now()
+        
+        # Generate sample articles for each active news source
         for source in news_sources:
-            sync_statuses.append({
-                'id': f"news_{source['id']}",  # Prefix to avoid ID conflicts
-                'type': 'news',
-                'title': source['name'],
-                'itemName': source['name'],
-                'status': source.get('syncStatus', 'pending'),
-                'timestamp': source['createdAt'],
-                'lastSync': source.get('lastSync'),
-                'progress': 0 if source.get('syncStatus') == 'pending' else 100,
-                'message': f"News source ready for sync" if source.get('syncStatus') == 'pending' else 'Synced successfully',
-                'newsInfo': {
-                    'url': source['url'],
-                    'category': source['category'],
-                    'syncFrequency': source['syncFrequency'],
-                    'isActive': source['isActive']
-                }
-            })
+            if source.get('isActive', True):
+                # Simulate 2-5 articles per source ready for sync
+                import random
+                article_count = random.randint(2, 5)
+                
+                for i in range(article_count):
+                    article_id = str(uuid.uuid4())
+                    article_time = current_time - timedelta(hours=random.randint(1, 12))
+                    
+                    # Sample article titles based on source category
+                    category = source.get('category', 'News')
+                    if category.lower() == 'technology':
+                        titles = [
+                            "New AI Breakthrough in Machine Learning",
+                            "Latest Software Development Trends",
+                            "Cybersecurity Updates and Best Practices",
+                            "Cloud Computing Innovations"
+                        ]
+                    elif category.lower() == 'science':
+                        titles = [
+                            "Climate Change Research Findings",
+                            "Space Exploration Mission Updates",
+                            "Medical Research Breakthroughs",
+                            "Physics Discovery Announcement"
+                        ]
+                    else:
+                        titles = [
+                            "Breaking News Update",
+                            "Economic Market Analysis",
+                            "Political Development Report",
+                            "Global Events Coverage"
+                        ]
+                    
+                    title = f"{random.choice(titles)} - {source['name']}"
+                    
+                    sync_statuses.append({
+                        'id': f"article_{article_id}",
+                        'type': 'article',
+                        'title': title,
+                        'itemName': title,
+                        'status': 'ready',
+                        'timestamp': article_time.isoformat(),
+                        'lastSync': None,
+                        'progress': 100,
+                        'message': f"Article ready to sync to Kindle",
+                        'source': source['name'],
+                        'articleInfo': {
+                            'source_name': source['name'],
+                            'category': category,
+                            'word_count': random.randint(300, 1500),
+                            'reading_time': random.randint(2, 8),
+                            'quality_score': round(random.uniform(0.6, 0.9), 2),
+                            'published_at': article_time.isoformat(),
+                            'summary': f"Summary of article from {source['name']} in {category} category."
+                        }
+                    })
         
         return jsonify(sync_statuses)
     
@@ -457,6 +537,286 @@ def create_app(config_class=DevelopmentConfig):
             'message': '🔓 AUTH DISABLED - Using dev user for local development'
         })
     
+    # RSS Feed Testing endpoints
+    @app.route('/api/rss-feeds/test', methods=['POST', 'OPTIONS'])
+    def test_rss_feed():
+        """Test RSS feed endpoint"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            data = request.get_json()
+            if not data or 'url' not in data:
+                return jsonify({'error': 'URL required'}), 400
+            
+            from services.rss_feed_tester import RSSFeedTester, FeedConfiguration
+            from datetime import datetime
+            
+            url = data['url']
+            config_data = data.get('config', {})
+            
+            config = FeedConfiguration(
+                max_articles=config_data.get('max_articles', 10),
+                timeout=config_data.get('timeout', 30),
+                quality_threshold=config_data.get('quality_threshold', 0.3)
+            )
+            
+            tester = RSSFeedTester()
+            result = tester.test_feed(url, config)
+            
+            result_dict = {
+                'url': result.url,
+                'status': result.status.value,
+                'success': result.success,
+                'title': result.title,
+                'description': result.description,
+                'article_count': result.article_count,
+                'last_updated': result.last_updated.isoformat() if result.last_updated else None,
+                'error_message': result.error_message,
+                'warnings': result.warnings,
+                'test_duration': result.test_duration,
+                'sample_articles': result.sample_articles,
+                'tested_at': datetime.now().isoformat()
+            }
+            
+            return jsonify(result_dict)
+            
+        except Exception as e:
+            logger.error(f"Error testing RSS feed: {e}")
+            return jsonify({'error': f'Failed to test RSS feed: {str(e)}'}), 500
+    
+    @app.route('/api/rss-feeds/validate', methods=['POST', 'OPTIONS'])
+    def validate_rss_feed():
+        """Validate RSS feed endpoint"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            data = request.get_json()
+            if not data or 'url' not in data:
+                return jsonify({'error': 'URL required'}), 400
+            
+            from services.rss_feed_tester import RSSFeedTester, FeedConfiguration
+            
+            url = data['url']
+            config_data = data.get('config', {})
+            
+            config = FeedConfiguration(
+                max_articles=config_data.get('max_articles', 10),
+                timeout=config_data.get('timeout', 30),
+                quality_threshold=config_data.get('quality_threshold', 0.3)
+            )
+            
+            tester = RSSFeedTester()
+            is_valid, error_message, metadata = tester.validate_feed_before_save(url, config)
+            
+            if is_valid:
+                return jsonify({
+                    'valid': True,
+                    'message': 'RSS feed is valid and ready to be saved',
+                    'metadata': metadata
+                })
+            else:
+                return jsonify({
+                    'valid': False,
+                    'error': error_message,
+                    'metadata': metadata
+                })
+            
+        except Exception as e:
+            logger.error(f"Error validating RSS feed: {e}")
+            return jsonify({'error': f'Failed to validate RSS feed: {str(e)}'}), 500
+    
+    @app.route('/api/rss-feeds/quick', methods=['POST', 'OPTIONS'])
+    def quick_test_rss_feed():
+        """Quick test RSS feed endpoint"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            data = request.get_json()
+            if not data or 'url' not in data:
+                return jsonify({'error': 'URL required'}), 400
+            
+            from services.rss_feed_tester import RSSFeedTester, FeedConfiguration
+            
+            url = data['url']
+            config = FeedConfiguration(max_articles=3, timeout=10, quality_threshold=0.1)
+            
+            tester = RSSFeedTester()
+            result = tester.test_feed(url, config)
+            
+            return jsonify({
+                'url': url,
+                'success': result.success,
+                'title': result.title,
+                'article_count': result.article_count,
+                'status': result.status.value,
+                'error_message': result.error_message,
+                'test_duration': result.test_duration
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in quick RSS feed test: {e}")
+            return jsonify({'error': f'Failed to test RSS feed: {str(e)}'}), 500
+    
+    # Article sync endpoints
+    @app.route('/api/news-sources/<id>/sync', methods=['POST', 'OPTIONS'])
+    def sync_news_source_articles(id):
+        """Sync articles from a specific news source"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            # Find the news source
+            source = None
+            for s in news_sources:
+                if s['id'] == id:
+                    source = s
+                    break
+            
+            if not source:
+                return jsonify({
+                    'success': False,
+                    'error': 'News source not found'
+                }), 404
+            
+            # Simulate article sync
+            from services.article_sync_manager import ArticleSyncManager
+            from datetime import datetime, timedelta
+            sync_manager = ArticleSyncManager()
+            
+            # For local dev, just update the sync status
+            current_time = datetime.now().isoformat()
+            
+            # Update the source
+            for i, s in enumerate(news_sources):
+                if s['id'] == id:
+                    news_sources[i]['lastSync'] = current_time
+                    news_sources[i]['syncStatus'] = 'synced'
+                    # Calculate next sync time based on frequency
+                    frequency = s.get('syncFrequency', 'daily')
+                    if frequency == 'hourly':
+                        next_sync = datetime.now() + timedelta(hours=1)
+                    elif frequency == 'weekly':
+                        next_sync = datetime.now() + timedelta(weeks=1)
+                    elif frequency == 'monthly':
+                        next_sync = datetime.now() + timedelta(days=30)
+                    else:  # daily
+                        next_sync = datetime.now() + timedelta(days=1)
+                    
+                    news_sources[i]['nextSyncDue'] = next_sync.isoformat()
+                    break
+            
+            # Simulate sync result
+            import random
+            articles_synced = random.randint(3, 8)
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully synced {articles_synced} articles from {source["name"]}',
+                'result': {
+                    'source_id': id,
+                    'source_name': source['name'],
+                    'articles_added': articles_synced,
+                    'articles_updated': 0,
+                    'articles_total': articles_synced,
+                    'last_sync': current_time,
+                    'next_sync_due': news_sources[i]['nextSyncDue']
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error syncing news source: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to sync news source: {str(e)}'
+            }), 500
+    
+    @app.route('/api/articles/sync-all', methods=['POST', 'OPTIONS'])
+    def sync_all_articles():
+        """Sync articles from all active news sources"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            from datetime import datetime, timedelta
+            
+            active_sources = [s for s in news_sources if s.get('isActive', True)]
+            
+            if not active_sources:
+                return jsonify({
+                    'success': False,
+                    'error': 'No active news sources to sync'
+                }), 400
+            
+            current_time = datetime.now()
+            synced_sources = 0
+            total_articles = 0
+            
+            # Update all active sources
+            for i, source in enumerate(news_sources):
+                if source.get('isActive', True):
+                    # Simulate article sync
+                    import random
+                    articles_count = random.randint(2, 6)
+                    total_articles += articles_count
+                    
+                    # Update sync info
+                    news_sources[i]['lastSync'] = current_time.isoformat()
+                    news_sources[i]['syncStatus'] = 'synced'
+                    
+                    # Calculate next sync time
+                    frequency = source.get('syncFrequency', 'daily')
+                    if frequency == 'hourly':
+                        next_sync = current_time + timedelta(hours=1)
+                    elif frequency == 'weekly':
+                        next_sync = current_time + timedelta(weeks=1)
+                    elif frequency == 'monthly':
+                        next_sync = current_time + timedelta(days=30)
+                    else:  # daily
+                        next_sync = current_time + timedelta(days=1)
+                    
+                    news_sources[i]['nextSyncDue'] = next_sync.isoformat()
+                    synced_sources += 1
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully synced {synced_sources} sources with {total_articles} total articles',
+                'result': {
+                    'sources_synced': synced_sources,
+                    'total_articles': total_articles,
+                    'sync_completed_at': current_time.isoformat()
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error syncing all articles: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to sync articles: {str(e)}'
+            }), 500
+    
     # Books endpoints (add missing ones)
     @app.route('/api/books/<id>', methods=['GET', 'OPTIONS'])
     def get_book(id):
@@ -489,6 +849,212 @@ def create_app(config_class=DevelopmentConfig):
                 'success': False,
                 'error': 'Book not found'
             }), 404
+    
+    # KUAL API endpoints for Kindle client
+    @app.route('/api/v1/health', methods=['GET', 'OPTIONS'])
+    def kual_health_check():
+        """Health check endpoint for KUAL client"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        return jsonify({
+            'status': 'healthy',
+            'service': 'kindle-content-server',
+            'version': '1.0.0-local',
+            'timestamp': datetime.now().isoformat()
+        }), 200
+    
+    @app.route('/api/v1/auth/device', methods=['POST', 'OPTIONS'])
+    def kual_authenticate_device():
+        """Authenticate Kindle device - simplified for local dev"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            device_id = request.headers.get('X-Device-ID', 'local-device')
+            api_key = request.headers.get('X-API-Key', 'local-key')
+            
+            logger.info(f"KUAL device authentication: {device_id}")
+            
+            return jsonify({
+                'status': 'success',
+                'message': 'Device authenticated successfully (local dev mode)',
+                'device_id': device_id,
+                'device_type': 'kindle',
+                'server_time': datetime.now().isoformat(),
+                'session_expires': (datetime.now() + timedelta(hours=24)).isoformat()
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error in KUAL auth: {e}")
+            return jsonify({
+                'status': 'error',
+                'message': 'Authentication failed'
+            }), 500
+    
+    @app.route('/api/v1/content/list', methods=['GET', 'OPTIONS'])
+    def kual_get_content_list():
+        """Get list of content available for download"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            device_id = request.headers.get('X-Device-ID', 'local-device')
+            logger.info(f"KUAL content list requested by: {device_id}")
+            
+            content_items = []
+            
+            # Add uploaded books
+            for book in uploaded_books:
+                content_items.append({
+                    'id': book['id'],
+                    'type': 'book',
+                    'title': book['title'],
+                    'author': book['author'],
+                    'filename': book['filename'],
+                    'format': book['format'].lower(),
+                    'file_size': book['fileSize'],
+                    'upload_date': book['uploadDate'],
+                    'description': f"Book by {book['author']}",
+                    'ready_for_sync': True
+                })
+            
+            # Add sample news digests
+            from datetime import datetime
+            import random
+            
+            for source in news_sources:
+                if source.get('isActive', True):
+                    content_items.append({
+                        'id': f"news_{source['name'].lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}",
+                        'type': 'news_digest',
+                        'title': f"{source['name']} - {datetime.now().strftime('%Y-%m-%d')}",
+                        'author': source['name'],
+                        'filename': f"{source['name'].replace(' ', '_')}_digest_{datetime.now().strftime('%Y%m%d')}.epub",
+                        'format': 'epub',
+                        'file_size': random.randint(100000, 500000),
+                        'upload_date': datetime.now().isoformat(),
+                        'description': f"News digest from {source['name']}",
+                        'article_count': random.randint(3, 8),
+                        'source_name': source['name'],
+                        'ready_for_sync': True
+                    })
+            
+            return jsonify({
+                'content': content_items,
+                'total_items': len(content_items),
+                'last_updated': datetime.now().isoformat(),
+                'device_id': device_id
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error getting KUAL content list: {e}")
+            return jsonify({'error': 'Failed to get content list'}), 500
+    
+    @app.route('/api/v1/content/download/<content_id>', methods=['GET', 'OPTIONS'])
+    def kual_download_content(content_id):
+        """Download specific content file - simulated for local dev"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            device_id = request.headers.get('X-Device-ID', 'local-device')
+            logger.info(f"KUAL download requested: {content_id} by {device_id}")
+            
+            # Find the content
+            content_found = False
+            
+            # Check books
+            for book in uploaded_books:
+                if book['id'] == content_id:
+                    content_found = True
+                    logger.info(f"Simulating download of book: {book['title']}")
+                    
+                    # For local dev, return a JSON response instead of actual file
+                    return jsonify({
+                        'status': 'simulated_download',
+                        'message': f"Download simulation for book: {book['title']}",
+                        'content_id': content_id,
+                        'filename': book['filename'],
+                        'file_size': book['fileSize'],
+                        'note': 'In production, this would return the actual file'
+                    }), 200
+            
+            # Check news digests
+            if content_id.startswith('news_'):
+                content_found = True
+                logger.info(f"Simulating download of news digest: {content_id}")
+                
+                return jsonify({
+                    'status': 'simulated_download',
+                    'message': f"Download simulation for news digest: {content_id}",
+                    'content_id': content_id,
+                    'format': 'epub',
+                    'note': 'In production, this would generate and return an EPUB file'
+                }), 200
+            
+            if not content_found:
+                return jsonify({'error': 'Content not found'}), 404
+                
+        except Exception as e:
+            logger.error(f"Error downloading KUAL content: {e}")
+            return jsonify({'error': 'Failed to download content'}), 500
+    
+    @app.route('/api/v1/content/sync-status', methods=['POST', 'OPTIONS'])
+    def kual_report_sync_status():
+        """Receive sync status report from Kindle device"""
+        if request.method == 'OPTIONS':
+            response = jsonify({'status': 'ok'})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "*")
+            response.headers.add('Access-Control-Allow-Methods', "*")
+            return response
+        
+        try:
+            device_id = request.headers.get('X-Device-ID', 'local-device')
+            data = request.get_json() or {}
+            
+            content_id = data.get('content_id')
+            status = data.get('status')
+            message = data.get('message', '')
+            
+            logger.info(f"KUAL sync status from {device_id}: {content_id} - {status}")
+            logger.info(f"Sync message: {message}")
+            
+            # Update book status if it's a book
+            for book in uploaded_books:
+                if book['id'] == content_id and status == 'success':
+                    book['syncStatus'] = 'synced'
+                    book['lastSync'] = datetime.now().isoformat()
+                    logger.info(f"Marked book {book['title']} as synced")
+                    break
+            
+            return jsonify({
+                'status': 'received',
+                'message': 'Sync status recorded successfully',
+                'content_id': content_id,
+                'server_time': datetime.now().isoformat()
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error recording KUAL sync status: {e}")
+            return jsonify({'error': 'Failed to record sync status'}), 500
     
     # Error handlers
     @app.errorhandler(404)

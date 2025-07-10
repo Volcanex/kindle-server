@@ -252,13 +252,54 @@ class NewsAggregator:
                     continue
                 
                 if content_html:
-                    # Convert HTML to clean text
-                    clean_content = self.html_converter.handle(content_html)
-                    # Remove excessive whitespace
-                    clean_content = re.sub(r'\n\s*\n', '\n\n', clean_content.strip())
-                    return clean_content
+                    # Clean and convert HTML to text
+                    clean_content = self._clean_html_to_text(content_html)
+                    if clean_content:
+                        return clean_content
         
         return ''
+    
+    def _clean_html_to_text(self, html_content: str) -> str:
+        """Clean HTML content and convert to readable text"""
+        try:
+            # Remove problematic HTML elements/attributes that cause "Unknown Operation"
+            html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+            html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+            html_content = re.sub(r'<noscript[^>]*>.*?</noscript>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+            
+            # Remove common problematic attributes
+            html_content = re.sub(r'\s(onclick|onload|onerror|onmouseover|onmouseout)="[^"]*"', '', html_content, flags=re.IGNORECASE)
+            html_content = re.sub(r'\s(onclick|onload|onerror|onmouseover|onmouseout)=\'[^\']*\'', '', html_content, flags=re.IGNORECASE)
+            
+            # Remove data attributes that might cause issues
+            html_content = re.sub(r'\sdata-[a-zA-Z0-9-]+="[^"]*"', '', html_content)
+            html_content = re.sub(r'\sdata-[a-zA-Z0-9-]+=\'[^\']*\'', '', html_content)
+            
+            # Convert HTML to clean text
+            clean_content = self.html_converter.handle(html_content)
+            
+            # Remove "Unknown Operation" and similar artifacts
+            clean_content = re.sub(r'Unknown Operation', '', clean_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'\[Unknown[^\]]*\]', '', clean_content, flags=re.IGNORECASE)
+            
+            # Clean up whitespace
+            clean_content = re.sub(r'\n\s*\n', '\n\n', clean_content.strip())
+            clean_content = re.sub(r'\n{3,}', '\n\n', clean_content)
+            
+            return clean_content.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning HTML content: {e}")
+            # Fallback: try to extract plain text from HTML
+            try:
+                import html
+                # Remove all HTML tags and decode entities
+                text_content = re.sub(r'<[^>]+>', '', html_content)
+                text_content = html.unescape(text_content)
+                text_content = re.sub(r'\s+', ' ', text_content.strip())
+                return text_content
+            except:
+                return ''
     
     def _extract_summary(self, entry, content: str) -> str:
         """Extract or generate article summary"""

@@ -1,0 +1,36 @@
+# Google App Engine deployment configuration
+runtime: python312
+
+# Auto-scaling configuration
+automatic_scaling:
+  min_instances: 1
+  max_instances: 10
+  target_cpu_utilization: 0.7
+  target_throughput_utilization: 0.7
+
+# Environment variables
+env_variables:
+  FLASK_ENV: production
+  SECRET_KEY: your-secret-key-here
+  CLOUD_SQL_CONNECTION_NAME: your-project:region:instance-name
+  DB_USER: kindle_user
+  DB_PASS: your-secure-password
+  DB_NAME: kindle_content_server
+  GOOGLE_CLOUD_PROJECT: your-google-cloud-project-id
+  GCS_BUCKET_NAME: kindle-content-storage
+  SERVER_PASSCODE: your-server-passcode
+  SERVICE_VERSION: 1.0.0
+  LOG_LEVEL: INFO
+
+# VPC access for Cloud SQL
+vpc_access_connector:
+  name: projects/your-project/locations/region/connectors/connector-name
+
+# Resource limits
+resources:
+  cpu: 1
+  memory_gb: 1
+  disk_size_gb: 10
+
+# Entry point
+entrypoint: gunicorn --bind :$PORT --workers 2 --timeout 120 backend.app_production:app
